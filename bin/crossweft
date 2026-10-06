@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# crossweft launcher for plugin/hook use: runs the package that ships next to
+# this script with the first Python >= 3.9 it finds. No install step needed.
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# The shell running this script is the one Claude Code runs hooks in; the plugin
+# asks it whether the project's own hooks start crossweft (harness._hook_shell).
+CROSSWEFT_SHELL="$BASH"
+# Git Bash on Windows: a Windows Python needs C:\..., not the shell's /c/...
+if command -v cygpath >/dev/null 2>&1; then
+  here="$(cygpath -w "$here")"
+  CROSSWEFT_SHELL="$(cygpath -w "$BASH")"
+fi
+export CROSSWEFT_SHELL
+for py in python3 python py; do
+  if command -v "$py" >/dev/null 2>&1 && \
+     "$py" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' >/dev/null 2>&1; then
+    # The package directory goes first on sys.path as an argument, not through
+    # PYTHONPATH: its separator is ';' for a Windows Python and ':' in the shell,
+    # and neither the user's PYTHONPATH nor a `crossweft/` in the working
+    # directory (python -m would put it first) may decide which crossweft runs.
+    exec "$py" -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from crossweft.cli import main; sys.exit(main())' "$here" "$@"
+  fi
+done
+echo "crossweft: no Python 3.9+ found (tried python3, python, py) -- seams are NOT being checked" >&2
+# exit 1: a non-blocking error the agent host shows; never exit 0 (that would read as a pass)
+exit 1

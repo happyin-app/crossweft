@@ -1,0 +1,14 @@
+- id: crossweft-check
+  name: crossweft check
+  description: Fail the commit when a seam between components disagrees.
+  entry: crossweft check
+  language: python
+  pass_filenames: false
+  always_run: true
+- id: crossweft-validators
+  name: crossweft validators
+  description: Run every validate_*.py and prove each did real work.
+  entry: crossweft validators
+  language: python
+  pass_filenames: false
+  always_run: true

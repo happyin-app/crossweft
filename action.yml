@@ -1,0 +1,37 @@
+name: crossweft
+description: Check that the seams between your components agree (annotations on the diff).
+author: HappyIn
+branding:
+  icon: link
+  color: blue
+inputs:
+  root:
+    description: Repository directory that holds crossweft.json.
+    default: "."
+  validators:
+    description: Also run `crossweft validators` (needs validators.dir in crossweft.json).
+    default: "false"
+  python-version:
+    description: Python used to run crossweft.
+    default: "3.12"
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+    - name: crossweft check
+      shell: bash
+      env:
+        PYTHONPATH: ${{ github.action_path }}
+        CROSSWEFT_ROOT: ${{ inputs.root }}
+      # the input reaches the shell as a variable, never pasted into the script
+      run: python -m crossweft --root "$CROSSWEFT_ROOT" check --format github
+    - name: crossweft validators
+      if: ${{ inputs.validators == 'true' }}
+      shell: bash
+      env:
+        PYTHONPATH: ${{ github.action_path }}
+        CROSSWEFT_ROOT: ${{ inputs.root }}
+      # the input reaches the shell as a variable, never pasted into the script
+      run: python -m crossweft --root "$CROSSWEFT_ROOT" validators

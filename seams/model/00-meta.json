@@ -1,0 +1,11 @@
+{
+  "meta": {
+    "schema": "crossweft.map.v1",
+    "title": "crossweft — its own seams",
+    "lanes": [
+      {"id": "tool", "name": "Tool"},
+      {"id": "integrations", "name": "Agent and CI integrations"},
+      {"id": "docs", "name": "Docs and examples"}
+    ]
+  }
+}

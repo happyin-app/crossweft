@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crossweft"
+version = "0.1.0"
+description = "Every hand-written seam needs a guard: keep cross-language contracts in agreement, and tell coding agents which other side to re-read."
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "Apache-2.0"}
+authors = [{name = "HappyIn"}]
+keywords = ["ai-agents", "claude-code", "coding-agents", "architecture", "contracts",
+            "drift", "polyglot", "monorepo", "lint", "ci"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+]
+dependencies = []
+
+[project.scripts]
+crossweft = "crossweft.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/happyin-app/crossweft"
+Issues = "https://github.com/happyin-app/crossweft/issues"
+
+[tool.setuptools]
+packages = ["crossweft"]
+license-files = ["LICENSE", "NOTICE"]
+
+[tool.setuptools.package-data]
+crossweft = ["viewer.template.html", "skills/crossweft/SKILL.md"]

@@ -1,0 +1,9 @@
+{
+  "model_dir": "seams/model",
+  "output_dir": "seams",
+  "language": "en",
+  "check_rendered_docs": true,
+  "agent": {
+    "harness": true
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "crossweft",
+  "description": "crossweft: contract-checked seams for coding agents",
+  "owner": {"name": "HappyIn", "url": "https://happyin.ai"},
+  "plugins": [
+    {
+      "name": "crossweft",
+      "source": ".",
+      "description": "After an edit, name the other side of mapped seams and request bounded repair when a check fails."
+    }
+  ]
+}

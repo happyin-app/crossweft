@@ -1,0 +1,13 @@
+{
+  "pairs": {
+    "price-rounding": {
+      "attested_on": "2026-09-30",
+      "reason": "Read both: Go and TypeScript round half-up on cents (floor(x*100+0.5)).",
+      "regions": {
+        "server/pricing.go": "e555bea2984de2a9ddeeac7c17b84ff9d29101a40053255d7a28dc848d682e73",
+        "web/src/pricing.ts": "d35142e59b3a701b8b50bc9ffd5d04eb32f5e9f12e19977d9194b7e96b9364ae"
+      }
+    }
+  },
+  "schema": "crossweft.lock.v1"
+}

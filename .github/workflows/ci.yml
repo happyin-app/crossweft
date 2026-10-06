@@ -1,0 +1,37 @@
+name: ci
+# GitHub-hosted runners are free for public repositories; a private fork
+# skips these jobs visibly instead of failing on billing.
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    if: ${{ !github.event.repository.private }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.9", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: unit and demo tests
+        run: python -m unittest discover -s tests -v
+      - name: self-tests
+        run: python -m crossweft self-test
+      - name: the demo's seams
+        run: python -m crossweft --root examples/polyglot-shop check --format github
+      - name: this repository's own seams
+        run: python -m crossweft check --format github
+  plugin:
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: action works on the demo
+        uses: ./
+        with:
+          root: examples/polyglot-shop

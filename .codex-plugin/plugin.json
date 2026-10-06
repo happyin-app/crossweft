@@ -1,0 +1,20 @@
+{
+  "name": "crossweft",
+  "version": "0.1.0",
+  "description": "Guides coding agents through locating and checking cross-component contracts with explicit Crossweft commands.",
+  "author": {"name": "HappyIn", "url": "https://happyin.ai"},
+  "homepage": "https://github.com/happyin-app/crossweft",
+  "repository": "https://github.com/happyin-app/crossweft",
+  "license": "Apache-2.0",
+  "skills": "./crossweft/skills/",
+  "keywords": ["contracts", "architecture", "drift", "polyglot", "guardrails"],
+  "interface": {
+    "displayName": "Crossweft",
+    "shortDescription": "Check seams between components.",
+    "longDescription": "Guides coding agents through locating and checking cross-component contracts with explicit Crossweft commands.",
+    "developerName": "HappyIn",
+    "category": "Developer Tools",
+    "capabilities": ["Read"],
+    "brandColor": "#2563EB"
+  }
+}

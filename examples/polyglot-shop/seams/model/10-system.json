@@ -1,0 +1,428 @@
+{
+  "$comment": "Blocks and links of the shop, and the guards that keep each hand-written seam honest.",
+  "blocks": [
+    {
+      "id": "web",
+      "name": "Web client",
+      "kind": "site",
+      "lane": "browser",
+      "status": "current",
+      "summary": "TypeScript single-page app: shows prices, places and reads orders.",
+      "code": [
+        "web/"
+      ]
+    },
+    {
+      "id": "api",
+      "name": "Orders API",
+      "kind": "service",
+      "lane": "backend",
+      "status": "current",
+      "summary": "Go HTTP API behind /v1.",
+      "code": [
+        "server/"
+      ],
+      "route_server": true
+    },
+    {
+      "id": "worker",
+      "name": "Shipping worker",
+      "kind": "service",
+      "lane": "jobs",
+      "status": "current",
+      "summary": "Python job that moves paid orders to shipped.",
+      "code": [
+        "worker/"
+      ]
+    },
+    {
+      "id": "orders-db",
+      "name": "Orders database",
+      "kind": "store",
+      "lane": "backend",
+      "status": "current",
+      "summary": "PostgreSQL; the orders table is shared by the API and the worker."
+    },
+    {
+      "id": "env",
+      "name": "Environment template",
+      "kind": "artifact",
+      "lane": "config",
+      "status": "current",
+      "summary": "Every variable the services read.",
+      "code": [
+        ".env.example"
+      ]
+    },
+    {
+      "id": "health-probe",
+      "name": "Health probe",
+      "kind": "external",
+      "lane": "backend",
+      "status": "current",
+      "summary": "The load balancer's liveness check."
+    }
+  ],
+  "links": [
+    {
+      "id": "web-orders",
+      "from": "web",
+      "to": "api",
+      "transport": "https",
+      "status": "current",
+      "summary": "Reads and places orders.",
+      "sync": "request-response",
+      "waits": "the order JSON",
+      "on_error": "shows the HTTP status",
+      "returns": [
+        "order"
+      ],
+      "contract": {
+        "name": "Orders API",
+        "enforcement": "duplicated",
+        "note": "hand-written on both sides: version, header, routes, fields, statuses, rounding"
+      },
+      "identifiers": {
+        "route": [
+          "GET /v1/orders/{id}",
+          "POST /v1/orders"
+        ],
+        "header": [
+          "X-Shop-Api-Version"
+        ]
+      },
+      "from_anchors": [
+        {
+          "path": "web/src/api.ts",
+          "find": "export async function getOrder"
+        }
+      ],
+      "to_anchors": [
+        {
+          "path": "server/main.go",
+          "find": "r.Route(\"/v1\""
+        }
+      ]
+    },
+    {
+      "id": "api-db",
+      "from": "api",
+      "to": "orders-db",
+      "transport": "sql",
+      "status": "current",
+      "summary": "Reads orders.",
+      "from_anchors": [
+        {
+          "path": "server/main.go",
+          "find": "SHOP_DB_URL"
+        }
+      ]
+    },
+    {
+      "id": "worker-db",
+      "from": "worker",
+      "to": "orders-db",
+      "transport": "sql",
+      "status": "current",
+      "summary": "Writes order status.",
+      "from_anchors": [
+        {
+          "path": "worker/worker.py",
+          "find": "DB_URL"
+        }
+      ]
+    },
+    {
+      "id": "worker-api-status",
+      "from": "worker",
+      "to": "api",
+      "transport": "sql",
+      "status": "current",
+      "label": "status column",
+      "summary": "The worker writes order status values that the API reads back.",
+      "contract": {
+        "name": "order status values",
+        "enforcement": "convention"
+      },
+      "from_anchors": [
+        {
+          "path": "worker/worker.py",
+          "find": "STATUSES = {"
+        }
+      ],
+      "to_anchors": [
+        {
+          "path": "server/main.go",
+          "find": "StatusPending"
+        }
+      ]
+    },
+    {
+      "id": "env-api",
+      "from": "env",
+      "to": "api",
+      "transport": "file",
+      "status": "current",
+      "summary": "Environment variables the API reads.",
+      "contract": {
+        "name": "API environment",
+        "enforcement": "duplicated"
+      },
+      "from_anchors": [
+        {
+          "path": ".env.example",
+          "find": "SHOP_LISTEN_ADDR"
+        }
+      ],
+      "to_anchors": [
+        {
+          "path": "server/main.go",
+          "find": "os.Getenv"
+        }
+      ]
+    },
+    {
+      "id": "env-worker",
+      "from": "env",
+      "to": "worker",
+      "transport": "file",
+      "status": "current",
+      "summary": "Environment variables the worker reads.",
+      "contract": {
+        "name": "worker environment",
+        "enforcement": "duplicated"
+      },
+      "from_anchors": [
+        {
+          "path": ".env.example",
+          "find": "SHOP_WORKER_POLL_SECONDS"
+        }
+      ],
+      "to_anchors": [
+        {
+          "path": "worker/worker.py",
+          "find": "os.environ"
+        }
+      ]
+    },
+    {
+      "id": "probe-health",
+      "from": "health-probe",
+      "to": "api",
+      "transport": "https",
+      "status": "current",
+      "summary": "Liveness check.",
+      "identifiers": {
+        "route": [
+          "GET /healthz"
+        ]
+      },
+      "to_anchors": [
+        {
+          "path": "server/main.go",
+          "find": "r.Get(\"/healthz\""
+        }
+      ]
+    }
+  ],
+  "flows": [
+    {
+      "id": "read-order",
+      "name": "Read an order",
+      "status": "current",
+      "summary": "The web client shows an order the API loads from the database.",
+      "steps": [
+        {
+          "link": "web-orders",
+          "action": "GET /v1/orders/{id} with X-Shop-Api-Version",
+          "waits": "the order JSON"
+        },
+        {
+          "link": "api-db",
+          "action": "select the order row"
+        },
+        {
+          "link": "web-orders",
+          "action": "order JSON",
+          "reply": true
+        }
+      ]
+    }
+  ],
+  "data": [
+    {
+      "id": "order",
+      "name": "Order JSON",
+      "kind": "payload",
+      "origin": "api",
+      "summary": "id, items, total_cents, status.",
+      "defined_in": [
+        {
+          "path": "server/main.go",
+          "find": "type Order struct"
+        }
+      ]
+    }
+  ],
+  "joins": [
+    {
+      "id": "api-version",
+      "name": "API version",
+      "link": "web-orders",
+      "points": [
+        {
+          "path": "web/src/api.ts",
+          "side": "web",
+          "regex": "API_VERSION = \"([^\"]+)\""
+        },
+        {
+          "path": "server/main.go",
+          "side": "api",
+          "regex": "APIVersion = \"([^\"]+)\""
+        }
+      ]
+    },
+    {
+      "id": "version-header",
+      "name": "API version header",
+      "link": "web-orders",
+      "points": [
+        {
+          "path": "web/src/api.ts",
+          "side": "web",
+          "regex": "VERSION_HEADER = \"([^\"]+)\""
+        },
+        {
+          "path": "server/main.go",
+          "side": "api",
+          "regex": "APIVersionHeader = \"([^\"]+)\""
+        }
+      ]
+    }
+  ],
+  "sets": [
+    {
+      "id": "order-fields",
+      "name": "Order JSON fields",
+      "link": "web-orders",
+      "mode": "equal",
+      "left": {
+        "label": "TypeScript interface",
+        "paths": [
+          "web/src/api.ts"
+        ],
+        "within": "interface Order \\{([^}]*)\\}",
+        "regex": "^\\s*([a-z_]+)\\??:"
+      },
+      "right": {
+        "label": "Go struct tags",
+        "paths": [
+          "server/main.go"
+        ],
+        "within": "type Order struct \\{([^}]*)\\}",
+        "regex": "json:\"([a-z_]+)"
+      }
+    },
+    {
+      "id": "web-statuses",
+      "name": "Order statuses (web)",
+      "link": "web-orders",
+      "mode": "equal",
+      "left": {
+        "label": "TypeScript union",
+        "paths": [
+          "web/src/api.ts"
+        ],
+        "within": "type OrderStatus = ([^;]*);",
+        "regex": "\"([a-z_]+)\""
+      },
+      "right": {
+        "label": "Go constants",
+        "paths": [
+          "server/main.go"
+        ],
+        "regex": "Status[A-Z][a-z]+\\s*=\\s*\"([a-z_]+)\""
+      }
+    },
+    {
+      "id": "worker-statuses",
+      "name": "Order statuses (worker)",
+      "link": "worker-api-status",
+      "mode": "equal",
+      "left": {
+        "label": "Python set",
+        "paths": [
+          "worker/worker.py"
+        ],
+        "within": "STATUSES = \\{([^}]*)\\}",
+        "regex": "\"([a-z_]+)\""
+      },
+      "right": {
+        "label": "Go constants",
+        "paths": [
+          "server/main.go"
+        ],
+        "regex": "Status[A-Z][a-z]+\\s*=\\s*\"([a-z_]+)\""
+      }
+    },
+    {
+      "id": "env-api-vars",
+      "name": "API env vars are declared",
+      "link": "env-api",
+      "mode": "right-subset",
+      "left": {
+        "label": ".env.example",
+        "paths": [
+          ".env.example"
+        ],
+        "regex": "^([A-Z][A-Z0-9_]*)="
+      },
+      "right": {
+        "label": "read by the API",
+        "paths": [
+          "server/**/*.go"
+        ],
+        "regex": "os\\.Getenv\\(\"([A-Z][A-Z0-9_]*)\"\\)"
+      }
+    },
+    {
+      "id": "env-worker-vars",
+      "name": "Worker env vars are declared",
+      "link": "env-worker",
+      "mode": "right-subset",
+      "left": {
+        "label": ".env.example",
+        "paths": [
+          ".env.example"
+        ],
+        "regex": "^([A-Z][A-Z0-9_]*)="
+      },
+      "right": {
+        "label": "read by the worker",
+        "paths": [
+          "worker/**/*.py"
+        ],
+        "regex": "os\\.(?:environ\\[|getenv\\()\"([A-Z][A-Z0-9_]*)\""
+      }
+    }
+  ],
+  "pairs": [
+    {
+      "id": "price-rounding",
+      "name": "Price rounding",
+      "link": "web-orders",
+      "notes": "The same half-up rounding in Go and TypeScript; there is no value to compare, so the regions are fingerprinted.",
+      "regions": [
+        {
+          "path": "web/src/pricing.ts",
+          "side": "web"
+        },
+        {
+          "path": "server/pricing.go",
+          "side": "api"
+        }
+      ]
+    }
+  ],
+  "findings": []
+}

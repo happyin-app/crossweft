@@ -1,0 +1,19 @@
+{
+  "meta": {
+    "schema": "crossweft.map.v1",
+    "title": "Polyglot shop — system map",
+    "lanes": [
+      {"id": "browser", "name": "Browser"},
+      {"id": "backend", "name": "Backend"},
+      {"id": "jobs", "name": "Background jobs"},
+      {"id": "config", "name": "Configuration"}
+    ],
+    "route_scan": {
+      "routers": [{"path": "server/main.go", "scanner": "go-chi"}],
+      "router_search": ["server/**/*.go"],
+      "client_globs": ["web/src/**/*.ts"],
+      "client_literal_regexes": ["[\"'`](/v1/[^\"'`$]*)"]
+    },
+    "coverage": {"roots": ["server", "web", "worker"]}
+  }
+}

@@ -1,0 +1,379 @@
+{
+  "blocks": [
+    {
+      "id": "engine",
+      "name": "crossweft package",
+      "kind": "library",
+      "lane": "tool",
+      "status": "current",
+      "summary": "Engine, CLI, discover, agent hooks, validators runner.",
+      "code": [
+        "crossweft/"
+      ]
+    },
+    {
+      "id": "packaging",
+      "name": "Python packaging",
+      "kind": "artifact",
+      "lane": "tool",
+      "status": "current",
+      "summary": "pyproject.toml: the pip package and the console script.",
+      "code": [
+        "pyproject.toml"
+      ]
+    },
+    {
+      "id": "claude-plugin",
+      "name": "Claude Code plugin",
+      "kind": "component",
+      "lane": "integrations",
+      "status": "current",
+      "summary": "Manifest, marketplace entry, hooks, launcher and skill.",
+      "code": [
+        ".claude-plugin/",
+        "hooks/",
+        "bin/"
+      ]
+    },
+    {
+      "id": "github-action",
+      "name": "GitHub Action",
+      "kind": "ci",
+      "lane": "integrations",
+      "status": "current",
+      "summary": "Composite action that annotates the diff.",
+      "code": [
+        "action.yml"
+      ]
+    },
+    {
+      "id": "pre-commit",
+      "name": "pre-commit hooks",
+      "kind": "tool",
+      "lane": "integrations",
+      "status": "current",
+      "summary": "Hook definitions for the pre-commit framework.",
+      "code": [
+        ".pre-commit-hooks.yaml"
+      ]
+    },
+    {
+      "id": "docs",
+      "name": "README and docs",
+      "kind": "artifact",
+      "lane": "docs",
+      "status": "current",
+      "summary": "What people read before they run anything.",
+      "code": [
+        "README.md",
+        "docs/"
+      ]
+    },
+    {
+      "id": "demo",
+      "name": "Polyglot demo",
+      "kind": "artifact",
+      "lane": "docs",
+      "status": "current",
+      "summary": "Go + TypeScript + Python shop; the tests break each seam.",
+      "code": [
+        "examples/",
+        "tests/"
+      ]
+    }
+  ],
+  "links": [
+    {
+      "id": "version",
+      "from": "packaging",
+      "to": "engine",
+      "transport": "build-input",
+      "status": "current",
+      "summary": "One release version in three places.",
+      "contract": {
+        "name": "release version",
+        "enforcement": "duplicated"
+      },
+      "from_anchors": [
+        {
+          "path": "pyproject.toml",
+          "find": "version = "
+        }
+      ],
+      "to_anchors": [
+        {
+          "path": "crossweft/__init__.py",
+          "find": "__version__"
+        }
+      ]
+    },
+    {
+      "id": "plugin-hooks",
+      "from": "claude-plugin",
+      "to": "engine",
+      "transport": "process-launch",
+      "status": "current",
+      "summary": "Claude Code runs `crossweft hook claude-code <event>`.",
+      "contract": {
+        "name": "hook CLI",
+        "enforcement": "duplicated"
+      },
+      "from_anchors": [
+        {
+          "path": "hooks/hooks.json",
+          "find": "hook claude-code post-edit"
+        }
+      ],
+      "to_anchors": [
+        {
+          "path": "crossweft/hooks.py",
+          "find": "def run_hook"
+        }
+      ]
+    },
+    {
+      "id": "action-cli",
+      "from": "github-action",
+      "to": "engine",
+      "transport": "process-launch",
+      "status": "current",
+      "summary": "The action runs CLI subcommands.",
+      "contract": {
+        "name": "CLI subcommands",
+        "enforcement": "convention"
+      },
+      "from_anchors": [
+        {
+          "path": "action.yml",
+          "find": "check --format github"
+        }
+      ],
+      "to_anchors": [
+        {
+          "path": "crossweft/cli.py",
+          "find": "def build_parser"
+        }
+      ]
+    },
+    {
+      "id": "precommit-cli",
+      "from": "pre-commit",
+      "to": "engine",
+      "transport": "process-launch",
+      "status": "current",
+      "summary": "pre-commit runs CLI subcommands.",
+      "contract": {
+        "name": "CLI subcommands",
+        "enforcement": "convention"
+      },
+      "from_anchors": [
+        {
+          "path": ".pre-commit-hooks.yaml",
+          "find": "entry: crossweft check"
+        }
+      ],
+      "to_anchors": [
+        {
+          "path": "crossweft/cli.py",
+          "find": "def build_parser"
+        }
+      ]
+    },
+    {
+      "id": "docs-cli",
+      "from": "docs",
+      "to": "engine",
+      "transport": "manual",
+      "status": "current",
+      "summary": "The docs tell people which commands to run.",
+      "contract": {
+        "name": "documented commands",
+        "enforcement": "convention"
+      },
+      "from_anchors": [
+        {
+          "path": "README.md",
+          "find": "crossweft check"
+        }
+      ],
+      "to_anchors": [
+        {
+          "path": "crossweft/cli.py",
+          "find": "def build_parser"
+        }
+      ]
+    },
+    {
+      "id": "demo-engine",
+      "from": "demo",
+      "to": "engine",
+      "transport": "in-process",
+      "status": "current",
+      "summary": "The tests drive the engine against the demo.",
+      "from_anchors": [
+        {
+          "path": "tests/test_crossweft.py",
+          "find": "from crossweft import"
+        }
+      ],
+      "to_anchors": [
+        {
+          "path": "crossweft/cli.py",
+          "find": "def main"
+        }
+      ]
+    },
+    {
+      "id": "license-terms",
+      "from": "packaging",
+      "to": "claude-plugin",
+      "transport": "build-input",
+      "status": "current",
+      "summary": "The same license expression is published to PyPI and to the plugin marketplace.",
+      "contract": {
+        "name": "license expression",
+        "enforcement": "duplicated"
+      },
+      "from_anchors": [
+        {
+          "path": "pyproject.toml",
+          "find": "license = {text"
+        }
+      ],
+      "to_anchors": [
+        {
+          "path": ".claude-plugin/plugin.json",
+          "find": "\"license\""
+        }
+      ]
+    }
+  ],
+  "joins": [
+    {
+      "id": "release-version",
+      "name": "Release version",
+      "link": "version",
+      "points": [
+        {
+          "path": "pyproject.toml",
+          "side": "packaging",
+          "regex": "^version = \"([^\"]+)\""
+        },
+        {
+          "path": "crossweft/__init__.py",
+          "side": "engine",
+          "regex": "__version__ = \"([^\"]+)\""
+        },
+        {
+          "path": ".claude-plugin/plugin.json",
+          "side": "plugin",
+          "regex": "\"version\": \"([^\"]+)\""
+        }
+      ]
+    },
+    {
+      "id": "license-expression",
+      "name": "License expression",
+      "link": "license-terms",
+      "points": [
+        {
+          "path": "pyproject.toml",
+          "side": "packaging",
+          "regex": "^license = \\{text = \"([^\"]+)\"\\}"
+        },
+        {
+          "path": ".claude-plugin/plugin.json",
+          "side": "plugin",
+          "regex": "\"license\": \"([^\"]+)\""
+        }
+      ]
+    }
+  ],
+  "sets": [
+    {
+      "id": "hook-events",
+      "name": "Hook events the plugin calls exist",
+      "link": "plugin-hooks",
+      "mode": "left-subset",
+      "left": {
+        "label": "hooks.json",
+        "paths": [
+          "hooks/hooks.json"
+        ],
+        "regex": "hook claude-code ([a-z-]+)"
+      },
+      "right": {
+        "label": "hooks.EVENTS",
+        "paths": [
+          "crossweft/hooks.py"
+        ],
+        "within": "EVENTS = \\(([^)]*)\\)",
+        "regex": "\"([a-z-]+)\""
+      }
+    },
+    {
+      "id": "action-commands",
+      "name": "Commands the action runs exist",
+      "link": "action-cli",
+      "mode": "left-subset",
+      "left": {
+        "label": "action.yml",
+        "paths": [
+          "action.yml"
+        ],
+        "regex": "crossweft --root \"[^\"]*\" ([a-z-]+)"
+      },
+      "right": {
+        "label": "CLI parser",
+        "paths": [
+          "crossweft/cli.py"
+        ],
+        "regex": "sub\\.add_parser\\(\"([a-z-]+)\""
+      }
+    },
+    {
+      "id": "precommit-commands",
+      "name": "Commands pre-commit runs exist",
+      "link": "precommit-cli",
+      "mode": "left-subset",
+      "left": {
+        "label": ".pre-commit-hooks.yaml",
+        "paths": [
+          ".pre-commit-hooks.yaml"
+        ],
+        "regex": "entry: crossweft ([a-z-]+)"
+      },
+      "right": {
+        "label": "CLI parser",
+        "paths": [
+          "crossweft/cli.py"
+        ],
+        "regex": "sub\\.add_parser\\(\"([a-z-]+)\""
+      }
+    },
+    {
+      "id": "documented-commands",
+      "name": "Commands the docs mention exist",
+      "link": "docs-cli",
+      "mode": "left-subset",
+      "left": {
+        "label": "README and docs",
+        "paths": [
+          "README.md",
+          "docs/*.md",
+          "AGENTS.md",
+          "crossweft/skills/**/*.md"
+        ],
+        "regex": "(?:^|`)crossweft ([a-z][a-z-]*)"
+      },
+      "right": {
+        "label": "CLI parser",
+        "paths": [
+          "crossweft/cli.py"
+        ],
+        "regex": "sub\\.add_parser\\(\"([a-z-]+)\""
+      }
+    }
+  ],
+  "findings": []
+}

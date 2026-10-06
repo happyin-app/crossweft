@@ -1,0 +1,806 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Polyglot shop — system map</title>
+<meta name="description" content="Polyglot shop — system map (crossweft)">
+<meta name="generator" content="crossweft">
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --ink: #1d232b; --muted: #5b6573; --line: #d9dee5;
+  --lane: #eef1f5; --lane-ink: #3c4653; --node: #ffffff; --node-line: #b9c2cd;
+  --accent: #2f6fdb; --accent-soft: #e3ecfb; --warn: #b3261e; --warn-soft: #fbe7e5;
+  --ok: #1f7a4d; --shadow: 0 1px 2px rgba(20, 30, 45, .08);
+  --t-pipe: #7b3fc4; --t-http: #2f6fdb; --t-file: #b7791f; --t-launch: #0f8a7e;
+  --t-build: #6b7480; --t-store: #2e8b3e; --t-manual: #c2417a; --t-other: #8a94a3;
+  --sev-blocker: #b3261e; --sev-major: #c75b12; --sev-minor: #a38400; --sev-info: #5b6573;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12161b; --panel: #1a1f26; --ink: #e5e9ef; --muted: #9aa5b3; --line: #2d353f;
+    --lane: #1f252d; --lane-ink: #c3ccd7; --node: #232a33; --node-line: #3d4855;
+    --accent: #6ea0ff; --accent-soft: #22324d; --warn: #ff8a80; --warn-soft: #3a2323;
+    --ok: #6fd3a0; --shadow: 0 1px 2px rgba(0, 0, 0, .4);
+    --t-pipe: #b58cf0; --t-http: #6ea0ff; --t-file: #e0b35a; --t-launch: #4fc7b9;
+    --t-build: #97a1ad; --t-store: #6cc57a; --t-manual: #f07cab; --t-other: #8a94a3;
+    --sev-blocker: #ff8a80; --sev-major: #ffab70; --sev-minor: #e6c95c; --sev-info: #9aa5b3;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12161b; --panel: #1a1f26; --ink: #e5e9ef; --muted: #9aa5b3; --line: #2d353f;
+  --lane: #1f252d; --lane-ink: #c3ccd7; --node: #232a33; --node-line: #3d4855;
+  --accent: #6ea0ff; --accent-soft: #22324d; --warn: #ff8a80; --warn-soft: #3a2323;
+  --ok: #6fd3a0; --shadow: 0 1px 2px rgba(0, 0, 0, .4);
+  --t-pipe: #b58cf0; --t-http: #6ea0ff; --t-file: #e0b35a; --t-launch: #4fc7b9;
+  --t-build: #97a1ad; --t-store: #6cc57a; --t-manual: #f07cab; --t-other: #8a94a3;
+  --sev-blocker: #ff8a80; --sev-major: #ffab70; --sev-minor: #e6c95c; --sev-info: #9aa5b3;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; display: flex; flex-direction: column; height: 100vh; }
+header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+header h1 { font-size: 16px; margin: 0; font-weight: 650; }
+header .meta { color: var(--muted); font-size: 12px; }
+header .spacer { flex: 1; }
+input[type=search] { background: var(--bg); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; min-width: 200px; font: inherit; }
+button { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+nav { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+nav .group { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+nav .label { color: var(--muted); font-size: 12px; margin-right: 2px; }
+main { display: grid; grid-template-columns: minmax(0, 1fr) 400px; flex: 1; min-height: 0; }
+#canvasWrap { overflow: auto; position: relative; }
+#panel { border-left: 1px solid var(--line); background: var(--panel); overflow: auto; padding: 14px 16px 40px; }
+@media (max-width: 900px) {
+  body { height: auto; }
+  main { grid-template-columns: 1fr; flex: none; }
+  #canvasWrap { height: 62vh; }
+  #panel { border-left: none; border-top: 1px solid var(--line); }
+  input[type=search] { min-width: 0; width: 100%; }
+}
+svg text { fill: var(--ink); }
+.lane-bg { fill: var(--lane); }
+.lane-title { font-size: 12px; font-weight: 650; fill: var(--lane-ink); letter-spacing: .02em; }
+.group-bg { fill: var(--accent-soft); fill-opacity: .45; stroke: var(--accent); stroke-opacity: .4; stroke-dasharray: 4 3; }
+.group-title { font-size: 11px; font-weight: 650; fill: var(--accent); }
+.node rect.box { fill: var(--node); stroke: var(--node-line); stroke-width: 1.2; filter: drop-shadow(var(--shadow)); }
+.node .name { font-size: 12.5px; font-weight: 600; }
+.node .sub { font-size: 11px; fill: var(--muted); }
+.node .badge { font-size: 10px; }
+.node.legacy rect.box, .node.planned rect.box, .node.out-of-scope rect.box, .node.test-only rect.box { stroke-dasharray: 5 3; fill-opacity: .7; }
+.node.sel rect.box { stroke: var(--accent); stroke-width: 2.4; }
+.node.hit rect.box { stroke: var(--accent); stroke-width: 2; }
+.node.warn rect.box { stroke: var(--warn); }
+.node .toggle { cursor: pointer; }
+.node .toggle rect { fill: var(--accent-soft); stroke: var(--accent); stroke-opacity: .5; }
+.node .toggle text { font-size: 10.5px; fill: var(--accent); font-weight: 650; }
+.node { cursor: pointer; }
+.dim { opacity: .18; }
+.edge { fill: none; stroke-width: 1.6; stroke-opacity: .55; cursor: pointer; }
+.edge.dash { stroke-dasharray: 6 4; }
+.edge.hot { stroke-width: 2.8; stroke-opacity: 1; }
+.edge-hit { fill: none; stroke: transparent; stroke-width: 12; cursor: pointer; }
+.stepdot circle { fill: var(--accent); }
+.stepdot text { fill: #fff; font-size: 10px; font-weight: 700; }
+.warnmark { fill: var(--warn); font-size: 12px; font-weight: 800; }
+h2 { font-size: 16px; margin: 4px 0 6px; }
+h3 { font-size: 13px; margin: 16px 0 6px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.summary { margin: 6px 0 10px; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; }
+.chip { display: inline-block; font-size: 11.5px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); cursor: default; }
+.chip.click { cursor: pointer; }
+.chip.click:hover { border-color: var(--accent); color: var(--accent); }
+.chip.st-current { border-color: var(--ok); color: var(--ok); }
+.chip.st-legacy, .chip.st-planned, .chip.st-out-of-scope, .chip.st-test-only { border-style: dashed; color: var(--muted); }
+.chip.sev-blocker { border-color: var(--sev-blocker); color: var(--sev-blocker); }
+.chip.sev-major { border-color: var(--sev-major); color: var(--sev-major); }
+.chip.sev-minor { border-color: var(--sev-minor); color: var(--sev-minor); }
+.chip.sev-info { border-color: var(--sev-info); color: var(--sev-info); }
+.item { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 6px 0; background: var(--bg); }
+.item.click { cursor: pointer; }
+.item.click:hover { border-color: var(--accent); }
+.item.active { border-color: var(--accent); background: var(--accent-soft); }
+.item .t { font-weight: 600; }
+.item .d { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.kv { display: grid; grid-template-columns: 110px 1fr; gap: 3px 8px; font-size: 12.5px; margin: 6px 0; }
+.kv .k { color: var(--muted); }
+code, .mono { font-family: ui-monospace, "JetBrains Mono", Consolas, monospace; font-size: 11.5px; overflow-wrap: anywhere; }
+a.blocklink, span.blocklink { color: var(--accent); cursor: pointer; text-decoration: none; }
+a.blocklink:hover, span.blocklink:hover { text-decoration: underline; }
+details { margin: 6px 0; }
+summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
+.legend { display: grid; grid-template-columns: 22px 1fr; gap: 4px 8px; font-size: 12.5px; align-items: center; }
+.legend svg { overflow: visible; }
+.seqwrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); padding: 6px 0; margin: 8px 0; }
+.seq text { font-size: 11px; }
+.seq .ptitle { font-weight: 650; }
+.seq .life { stroke: var(--line); stroke-dasharray: 3 3; }
+.seq .arrow { stroke: var(--accent); stroke-width: 1.5; fill: none; }
+.seq .arrow.reply { stroke-dasharray: 5 3; stroke: var(--muted); }
+.seq .wait { fill: var(--muted); font-style: italic; font-size: 10.5px; }
+.seq .num { fill: var(--accent); font-weight: 700; }
+.seq .sel .arrow { stroke-width: 2.6; }
+.empty { color: var(--muted); font-style: italic; }
+.warnbox { border: 1px solid var(--warn); background: var(--warn-soft); border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title"></h1>
+  <span class="meta" id="metaLine"></span>
+  <span class="spacer"></span>
+  <input type="search" id="search">
+  <button id="themeBtn">◐</button>
+</header>
+<nav>
+  <div class="group" id="tabs"></div>
+  <div class="group" id="planeGroup"><span class="label" id="planeLabel"></span><span id="planes"></span></div>
+  <div class="group"><span class="label" id="statusLabel"></span><span id="statuses"></span></div>
+  <div class="group"><button id="expandAll"></button><button id="collapseAll"></button></div>
+  <div class="group"><span class="label" id="zoomText"></span><button id="zoomOut">−</button><button id="zoomFit"><span id="zoomLabel"></span></button><button id="zoomIn">+</button></div>
+</nav>
+<main>
+  <div id="canvasWrap"><svg id="canvas" xmlns="http://www.w3.org/2000/svg" role="img"></svg></div>
+  <aside id="panel"></aside>
+</main>
+<script>
+"use strict";
+const MAP = {"blocks":[{"code":["web/"],"id":"web","kind":"site","lane":"browser","name":"Web client","status":"current","summary":"TypeScript single-page app: shows prices, places and reads orders."},{"code":["server/"],"id":"api","kind":"service","lane":"backend","name":"Orders API","route_server":true,"status":"current","summary":"Go HTTP API behind /v1."},{"code":["worker/"],"id":"worker","kind":"service","lane":"jobs","name":"Shipping worker","status":"current","summary":"Python job that moves paid orders to shipped."},{"id":"orders-db","kind":"store","lane":"backend","name":"Orders database","status":"current","summary":"PostgreSQL; the orders table is shared by the API and the worker."},{"code":[".env.example"],"id":"env","kind":"artifact","lane":"config","name":"Environment template","status":"current","summary":"Every variable the services read."},{"id":"health-probe","kind":"external","lane":"backend","name":"Health probe","status":"current","summary":"The load balancer's liveness check."}],"data":[{"defined_in":[{"find":"type Order struct","path":"server/main.go"}],"id":"order","kind":"payload","name":"Order JSON","origin":"api","summary":"id, items, total_cents, status."}],"findings":[],"flows":[{"id":"read-order","name":"Read an order","status":"current","steps":[{"action":"GET /v1/orders/{id} with X-Shop-Api-Version","link":"web-orders","waits":"the order JSON"},{"action":"select the order row","link":"api-db"},{"action":"order JSON","link":"web-orders","reply":true}],"summary":"The web client shows an order the API loads from the database."}],"i18n":{"dataKind":{"account":"account","artifact":"artifact","code":"code","config":"configuration","credential":"credential","evidence":"evidence","identity":"identity","image":"image","key":"key","message":"message","payload":"payload","policy":"policy","state":"state","telemetry":"telemetry"},"evidence":{"ci":"CI","none":"not proven","runtime":"installed product","source":"source"},"fstatus":{"accepted":"accepted with reason","closed":"closed","open":"open"},"kind":{"actor":"person","artifact":"artifact","ci":"CI","component":"component","contract":"contract","executable":"program","external":"external service","group":"group","host":"host","library":"library","service":"service","site":"site","store":"store","tool":"tool"},"severity":{"blocker":"blocker","info":"info","major":"major","minor":"minor"},"status":{"current":"current","legacy":"legacy","out-of-scope":"out of scope","planned":"planned","test-only":"test only"},"transport":{"build-input":"build input","cache":"cache","docker":"docker","dpapi":"DPAPI","embedded":"embedded","file":"file","generated-code":"generated code","git":"git","http-loopback":"HTTP localhost","https":"HTTPS","in-process":"in-process call","manual":"manual (operator)","mtls":"mTLS","named-pipe":"named pipe","oauth":"OAuth","object-store":"object store","os-api":"OS API","process-launch":"process launch","registry":"registry","scm":"SCM","smtp":"SMTP","sql":"SQL","ssh":"SSH","tunnel":"tunnel","ui":"UI","webhook":"webhook"},"ui":{"also_from":"also appears in","anchors":"Anchors in code","canvas":"Diagram of blocks and links","carried":"carried over","closed_by":"closed","code":"code","collapse_all":"Collapse","collapse_on_map":"Collapse on the map","contract":"contract","created_by":"created by","creates":"creates","dashed":"dashed — legacy / planned / out of scope","data":"Data","data_d":"Pick a data item: its source, path and receivers light up on the map.","data_h":"Data — where it comes from","data_path":"Data path","defer":"reason to defer","detector":"detector","docs":"docs","envs":"environments","evidence":"evidence","evidence_d":"\"source\" — the code exists and is checked by anchors; \"CI\" — covered by automated checks; \"installed product\" — proven on an installed build.","evidence_h":"Evidence","expand_all":"Expand all","expand_on_map":"Expand on the map","family_build":"generated code, build input, git","family_file":"files, registry, DPAPI, embedded resources","family_http":"network: HTTP/HTTPS, webhook, OAuth, mTLS, tunnel, SSH","family_launch":"process launch, SCM, in-process call","family_manual":"manual (operator)","family_other":"other","family_pipe":"named pipe (local IPC)","family_store":"database, object store, cache, SMTP","findings":"Findings","findings_d":"Mismatches between the sides of links, the code and the docs. Click to highlight on the map.","fit":"fit","flow_step":"Flow: ","flow_step_n":"{name}, step {n}","flows_d":"Pick a flow: its participants and step numbers light up on the map.","format":"format defined in","gets":"<- receives","gets_data":"receives","how_to":"How to use","how_to_d":"Columns are lanes: where a block runs. Arrows are links: who passes what to whom. Click a block to see whom it talks to, what it waits for and which data it creates or receives. The \"▸ N\" button expands internal components.","if_missing":"If missing: ","impact":"impact","in_flows":"Takes part in flows","in_reply":" (in the reply)","inside":"Inside","kind":"kind","legend":"Legend","link_colors":"Link colours","links_count":"links","links_n":"links: {n}","n_blocks":"blocks: {n}","n_data":"data items: {n}","n_flows":"flows: {n}","n_links":"links: {n}","next_step":"next step","no_findings":"No findings.","no_match":"Nothing matches.","not_carried":"Not carried over any link of the map (used inside its block).","nothing":"Nothing selected","on_error":"on error","open_findings":"Open findings: {open} (blockers {blocker}, major {major}). Blocks and links that have them are marked \"!\". ","open_list":"Open the list","overview":"Overview","owner":"owner","part_of":"part of","pick":"Click a block or a link to see its details.","plane":"Plane:","plane_all":"All","proof":"evidence","received_by":"received by","receives":"Receives","ref_block":"block: ","ref_data":"data: ","ref_flow":"flow: ","ref_link":"link: ","requirements":"requirements","result":"result","routes":"routes","runs":"runs on","search":"Find a block, link or data...","search_label":"Search","sends":"sends ->","sends_calls":"Sends / calls","sensitivity":"sensitivity","severity":"severity","show_inner":"Show internal components","since":"since","status":"status","statuses":"Statuses:","step":"step","steps":"Steps — who waits for what","stored":"stored","sync":"sync","tab_data":"Data — where from","tab_findings":"Findings","tab_flows":"Flows — who waits for what","tab_map":"Map","theme":"Light / dark theme","then_cap":"Then: ","title":"System map","transport":"transport","trigger":"trigger","verified_meta":"verified against the code: {sha} · {date}","wait_prefix":"waits: ","waits":"waits","waits_before":"Waits for, before it works","waits_cap":"Waits: ","where":"where","zoom":"Zoom:","zoom_fit":"Fit to width","zoom_in":"Larger","zoom_out":"Smaller"}},"lang":"en","links":[{"contract":{"enforcement":"duplicated","name":"Orders API","note":"hand-written on both sides: version, header, routes, fields, statuses, rounding"},"from":"web","from_anchors":[{"find":"export async function getOrder","path":"web/src/api.ts"}],"id":"web-orders","identifiers":{"header":["X-Shop-Api-Version"],"route":["GET /v1/orders/{id}","POST /v1/orders"]},"on_error":"shows the HTTP status","returns":["order"],"status":"current","summary":"Reads and places orders.","sync":"request-response","to":"api","to_anchors":[{"find":"r.Route(\"/v1\"","path":"server/main.go"}],"transport":"https","waits":"the order JSON"},{"from":"api","from_anchors":[{"find":"SHOP_DB_URL","path":"server/main.go"}],"id":"api-db","status":"current","summary":"Reads orders.","to":"orders-db","transport":"sql"},{"from":"worker","from_anchors":[{"find":"DB_URL","path":"worker/worker.py"}],"id":"worker-db","status":"current","summary":"Writes order status.","to":"orders-db","transport":"sql"},{"contract":{"enforcement":"convention","name":"order status values"},"from":"worker","from_anchors":[{"find":"STATUSES = {","path":"worker/worker.py"}],"id":"worker-api-status","label":"status column","status":"current","summary":"The worker writes order status values that the API reads back.","to":"api","to_anchors":[{"find":"StatusPending","path":"server/main.go"}],"transport":"sql"},{"contract":{"enforcement":"duplicated","name":"API environment"},"from":"env","from_anchors":[{"find":"SHOP_LISTEN_ADDR","path":".env.example"}],"id":"env-api","status":"current","summary":"Environment variables the API reads.","to":"api","to_anchors":[{"find":"os.Getenv","path":"server/main.go"}],"transport":"file"},{"contract":{"enforcement":"duplicated","name":"worker environment"},"from":"env","from_anchors":[{"find":"SHOP_WORKER_POLL_SECONDS","path":".env.example"}],"id":"env-worker","status":"current","summary":"Environment variables the worker reads.","to":"worker","to_anchors":[{"find":"os.environ","path":"worker/worker.py"}],"transport":"file"},{"from":"health-probe","id":"probe-health","identifiers":{"route":["GET /healthz"]},"status":"current","summary":"Liveness check.","to":"api","to_anchors":[{"find":"r.Get(\"/healthz\"","path":"server/main.go"}],"transport":"https"}],"meta":{"lanes":[{"id":"browser","name":"Browser"},{"id":"backend","name":"Backend"},{"id":"jobs","name":"Background jobs"},{"id":"config","name":"Configuration"}],"planes":null,"title":"Polyglot shop — system map","verified_against":null,"verified_on":null}};
+const T = MAP.i18n;
+const U = T.ui;
+const fmt = (s, v) => s.replace(/\{(\w+)\}/g, (_, k) => String(v[k]));
+const SVGNS = "http://www.w3.org/2000/svg";
+
+// ------------------------------------------------------------------ indexes
+const blocks = new Map(MAP.blocks.map(b => [b.id, b]));
+const links = new Map(MAP.links.map(l => [l.id, l]));
+const flows = new Map(MAP.flows.map(f => [f.id, f]));
+const datas = new Map(MAP.data.map(d => [d.id, d]));
+const findings = new Map(MAP.findings.map(f => [f.id, f]));
+const lanes = MAP.meta.lanes;
+const laneById = new Map(lanes.map(l => [l.id, l]));
+const childrenOf = new Map();
+for (const b of MAP.blocks) {
+  if (b.parent) { if (!childrenOf.has(b.parent)) childrenOf.set(b.parent, []); childrenOf.get(b.parent).push(b.id); }
+}
+const outLinks = new Map(), inLinks = new Map();
+for (const l of MAP.links) {
+  if (!outLinks.has(l.from)) outLinks.set(l.from, []); outLinks.get(l.from).push(l);
+  if (!inLinks.has(l.to)) inLinks.set(l.to, []); inLinks.get(l.to).push(l);
+}
+const carriers = new Map(); // data id -> [{link, src, dst}] (returns flow back to the caller)
+const addHop = (d, hop) => { if (!carriers.has(d)) carriers.set(d, []); carriers.get(d).push(hop); };
+for (const l of MAP.links) {
+  for (const d of (l.carries || [])) addHop(d, { link: l, src: l.from, dst: l.to });
+  for (const d of (l.returns || [])) addHop(d, { link: l, src: l.to, dst: l.from });
+}
+const flowsByLink = new Map();
+for (const f of MAP.flows) f.steps.forEach((s, i) => { if (!flowsByLink.has(s.link)) flowsByLink.set(s.link, []); flowsByLink.get(s.link).push([f, i]); });
+const findingsByRef = new Map();
+for (const f of MAP.findings) for (const r of (f.where || [])) { if (!findingsByRef.has(r)) findingsByRef.set(r, []); findingsByRef.get(r).push(f); }
+
+function ancestors(id) { const out = []; let cur = id; const seen = new Set(); while (cur && blocks.has(cur) && !seen.has(cur)) { out.push(cur); seen.add(cur); cur = blocks.get(cur).parent; } return out; }
+function rootOf(id) { const a = ancestors(id); return a[a.length - 1]; }
+function subtree(id) { const out = [id]; for (const c of (childrenOf.get(id) || [])) out.push(...subtree(c)); return out; }
+function shortName(id) { const b = blocks.get(id); return b ? (b.short || b.name) : id; }
+function openFindings(ref) { return (findingsByRef.get(ref) || []).filter(f => f.status !== "closed"); }
+
+// ------------------------------------------------------------------- state
+const PLANE_LIST = (MAP.meta.planes || []).map(p => [p.id, p.name]);
+const state = { tab: "map", plane: PLANE_LIST.length ? PLANE_LIST[0][0] : "all", statuses: new Set(["current"]), expanded: new Set(), sel: null, step: null, search: "" };
+const STATUS_ORDER = ["current", "out-of-scope", "planned", "test-only", "legacy"];
+const TABS = [["map", U.tab_map], ["flows", U.tab_flows], ["data", U.tab_data], ["findings", U.tab_findings]];
+const PLANES = PLANE_LIST.length ? [...PLANE_LIST, ["all", U.plane_all]] : [];
+
+function transportFamily(t) {
+  if (t === "named-pipe") return "pipe";
+  if (["https", "http-loopback", "webhook", "oauth", "mtls", "tunnel", "ssh"].includes(t)) return "http";
+  if (["file", "registry", "dpapi", "embedded"].includes(t)) return "file";
+  if (["process-launch", "scm", "in-process", "ui", "os-api"].includes(t)) return "launch";
+  if (["generated-code", "build-input", "git", "docker"].includes(t)) return "build";
+  if (["sql", "object-store", "cache", "smtp"].includes(t)) return "store";
+  if (t === "manual") return "manual";
+  return "other";
+}
+const FAMILY_RU = { pipe: U.family_pipe, http: U.family_http, file: U.family_file, launch: U.family_launch, build: U.family_build, store: U.family_store, manual: U.family_manual, other: U.family_other };
+
+// ---------------------------------------------------------------- visibility
+function laneVisible(laneId) { const lane = laneById.get(laneId); return lane && (state.plane === "all" || !lane.plane || lane.plane === state.plane); }
+function blockShown(b) { return state.statuses.has(b.status); }
+function visibleNode(id) {
+  const chain = ancestors(id).reverse();
+  if (!chain.length) return null;
+  const root = blocks.get(chain[0]);
+  if (!laneVisible(root.lane) || !blockShown(root)) return null;
+  for (let i = 0; i < chain.length; i++) {
+    const b = blocks.get(chain[i]);
+    if (i > 0 && !blockShown(b)) return null;
+    if (i === chain.length - 1 || !state.expanded.has(chain[i])) return chain[i];
+  }
+  return chain[chain.length - 1];
+}
+function linkShown(l) { return state.statuses.has(l.status); }
+
+// ------------------------------------------------------------------- layout
+const LANE_W = 222, LANE_GAP = 22, NODE_W = 194, NODE_H = 50, V_GAP = 12, TOP = 58, PAD = 16, INDENT = 10, GROUP_HEAD = 22;
+let zoom = null; // null = fit to width
+let layout = { nodes: new Map(), groups: [], lanes: [], width: 0, height: 0 };
+
+function computeLayout() {
+  const visLanes = lanes.filter(l => laneVisible(l.id));
+  const nodes = new Map(), groups = [], laneBoxes = [];
+  let maxY = TOP;
+  visLanes.forEach((lane, li) => {
+    const x0 = PAD + li * (LANE_W + LANE_GAP);
+    let y = TOP;
+    const roots = MAP.blocks.filter(b => !b.parent && b.lane === lane.id && blockShown(b));
+    const place = (id, depth) => {
+      const b = blocks.get(id);
+      const kids = (childrenOf.get(id) || []).filter(k => blockShown(blocks.get(k)));
+      if (state.expanded.has(id) && kids.length) {
+        const gx = x0 + (LANE_W - NODE_W) / 2 - 6 + depth * INDENT, gy = y;
+        y += GROUP_HEAD;
+        kids.forEach(k => place(k, depth + 1));
+        groups.push({ id, x: gx, y: gy, w: NODE_W + 12 - depth * INDENT * 2, h: y - gy + 4, depth });
+        y += 8;
+      } else {
+        const w = NODE_W - depth * INDENT * 2;
+        nodes.set(id, { id, x: x0 + (LANE_W - NODE_W) / 2 + depth * INDENT, y, w, h: NODE_H, lane: li, depth, kids: kids.length });
+        y += NODE_H + V_GAP;
+      }
+    };
+    roots.forEach(r => place(r.id, 0));
+    laneBoxes.push({ lane, x: x0, y: 8, w: LANE_W });
+    maxY = Math.max(maxY, y);
+  });
+  const height = maxY + 30;
+  laneBoxes.forEach(l => l.h = height - 16);
+  layout = { nodes, groups, lanes: laneBoxes, width: PAD * 2 + visLanes.length * (LANE_W + LANE_GAP), height };
+}
+
+function visibleEdges() {
+  const agg = new Map();
+  for (const l of MAP.links) {
+    if (!linkShown(l)) continue;
+    const s = visibleNode(l.from), d = visibleNode(l.to);
+    if (!s || !d || s === d || !layout.nodes.has(s) || !layout.nodes.has(d)) continue;
+    const key = s + "\u0000" + d;
+    if (!agg.has(key)) agg.set(key, { s, d, links: [] });
+    agg.get(key).links.push(l);
+  }
+  return [...agg.values()];
+}
+
+function edgePath(e) {
+  const a = layout.nodes.get(e.s), b = layout.nodes.get(e.d);
+  const reverse = layout.nodes.has(e.d) && visibleEdgeKeys.has(e.d + "\u0000" + e.s);
+  const off = reverse ? (e.s < e.d ? -5 : 5) : 0;
+  const ay = a.y + a.h / 2 + off, by = b.y + b.h / 2 + off;
+  if (a.lane === b.lane) {
+    const x = Math.max(a.x + a.w, b.x + b.w);
+    const bulge = 26 + Math.min(60, Math.abs(ay - by) / 6);
+    return { d: `M${a.x + a.w},${ay} C${x + bulge},${ay} ${x + bulge},${by} ${b.x + b.w},${by}`, mx: x + bulge * .75, my: (ay + by) / 2 };
+  }
+  const leftToRight = a.lane < b.lane;
+  const ax = leftToRight ? a.x + a.w : a.x, bx = leftToRight ? b.x : b.x + b.w;
+  const dx = Math.max(40, Math.abs(bx - ax) / 2);
+  const c1 = leftToRight ? ax + dx : ax - dx, c2 = leftToRight ? bx - dx : bx + dx;
+  return { d: `M${ax},${ay} C${c1},${ay} ${c2},${by} ${bx},${by}`, mx: (ax + bx) / 2, my: (ay + by) / 2 };
+}
+
+// ------------------------------------------------------------------ helpers
+function el(tag, attrs, parent) {
+  const node = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) node.setAttribute(k, v);
+  if (parent) parent.appendChild(node);
+  return node;
+}
+function h(tag, attrs, ...kids) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "onclick") node.addEventListener("click", v);
+    else if (k === "cls") node.className = v;
+    else node.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false) node.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
+  return node;
+}
+function truncate(text, n) { return text.length > n ? text.slice(0, n - 1) + "…" : text; }
+function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+// ------------------------------------------------------------- highlighting
+function involvement() {
+  // returns {blocks:Set, links:Set, primary:Set} for the current selection/search
+  const res = { blocks: new Set(), links: new Set(), primary: new Set(), steps: new Map() };
+  const sel = state.sel;
+  if (sel) {
+    if (sel.type === "block") {
+      const ids = new Set(subtree(sel.id));
+      for (const l of MAP.links) if (ids.has(l.from) || ids.has(l.to)) { res.links.add(l.id); res.blocks.add(l.from); res.blocks.add(l.to); }
+      ids.forEach(i => { res.blocks.add(i); res.primary.add(i); });
+    } else if (sel.type === "links") {
+      sel.ids.forEach(id => { const l = links.get(id); res.links.add(id); res.blocks.add(l.from); res.blocks.add(l.to); });
+    } else if (sel.type === "flow") {
+      const f = flows.get(sel.id);
+      f.steps.forEach((s, i) => {
+        if (state.step !== null && state.step !== i) return;
+        const l = links.get(s.link); res.links.add(l.id); res.blocks.add(l.from); res.blocks.add(l.to);
+        if (!res.steps.has(l.id)) res.steps.set(l.id, []); res.steps.get(l.id).push(i + 1);
+      });
+    } else if (sel.type === "data") {
+      const d = datas.get(sel.id);
+      res.blocks.add(d.origin); res.primary.add(d.origin);
+      for (const hop of (carriers.get(d.id) || [])) { res.links.add(hop.link.id); res.blocks.add(hop.src); res.blocks.add(hop.dst); }
+      for (const c of (d.consumers || [])) res.blocks.add(c);
+      for (const s of (d.stored_in || [])) res.blocks.add(s.block);
+    } else if (sel.type === "finding") {
+      const f = findings.get(sel.id);
+      for (const r of (f.where || [])) {
+        const [kind, id] = r.split(":");
+        if (kind === "block") { res.blocks.add(id); res.primary.add(id); }
+        if (kind === "link") { const l = links.get(id); res.links.add(id); res.blocks.add(l.from); res.blocks.add(l.to); }
+        if (kind === "data") { const d = datas.get(id); res.blocks.add(d.origin); for (const hop of (carriers.get(id) || [])) { res.links.add(hop.link.id); res.blocks.add(hop.src); res.blocks.add(hop.dst); } }
+        if (kind === "flow") { for (const s of flows.get(id).steps) { const l = links.get(s.link); res.links.add(l.id); res.blocks.add(l.from); res.blocks.add(l.to); } }
+      }
+    }
+  }
+  if (state.search) {
+    const q = state.search.toLowerCase();
+    for (const b of MAP.blocks) if ((b.name + " " + b.id + " " + (b.short || "") + " " + b.summary).toLowerCase().includes(q)) { res.blocks.add(b.id); res.primary.add(b.id); }
+  }
+  return res;
+}
+
+// ------------------------------------------------------------------- render
+let visibleEdgeKeys = new Set();
+function renderCanvas() {
+  computeLayout();
+  const svg = document.getElementById("canvas");
+  svg.innerHTML = "";
+  const wrap = document.getElementById("canvasWrap");
+  const fit = Math.max(0.72, Math.min(1, (wrap.clientWidth - 8) / layout.width));
+  const z = zoom === null ? fit : zoom;
+  svg.setAttribute("width", Math.round(layout.width * z)); svg.setAttribute("height", Math.round(layout.height * z));
+  svg.setAttribute("viewBox", `0 0 ${layout.width} ${layout.height}`);
+  document.getElementById("zoomLabel").textContent = zoom === null ? `${U.fit} (${Math.round(fit * 100)}%)` : `${Math.round(zoom * 100)}%`;
+  const defs = el("defs", {}, svg);
+  for (const fam of Object.keys(FAMILY_RU)) {
+    const m = el("marker", { id: "arr-" + fam, viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" }, defs);
+    el("path", { d: "M0,0 L10,5 L0,10 z", fill: cssVar("--t-" + fam) }, m);
+  }
+  svg.addEventListener("click", ev => { if (ev.target === svg) { select(null); } });
+  for (const lb of layout.lanes) {
+    el("rect", { class: "lane-bg", x: lb.x, y: lb.y, width: lb.w, height: lb.h, rx: 10 }, svg);
+    const name = lb.lane.name;
+    const cut = name.includes(" · ") ? name.indexOf(" · ") : name.includes(" (") ? name.indexOf(" (") : -1;
+    const lines = cut > 0 ? [name.slice(0, cut), name.slice(cut).replace(/^ · /, "").trim()] : [name];
+    lines.forEach((line, i) => { const t = el("text", { class: "lane-title", x: lb.x + 12, y: lb.y + 20 + i * 15 }, svg); t.textContent = truncate(line, 28); });
+    const lt = el("title", {}, svg.lastChild); lt.textContent = name;
+  }
+  const inv = involvement();
+  const active = state.sel || state.search;
+  const visOf = new Map();
+  const vis = id => { if (!visOf.has(id)) visOf.set(id, visibleNode(id)); return visOf.get(id); };
+  const hotNodes = new Set([...inv.blocks].map(vis).filter(Boolean));
+  const primaryNodes = new Set([...inv.primary].map(vis).filter(Boolean));
+  for (const g of layout.groups.sort((a, b) => a.depth - b.depth)) {
+    const grp = el("g", { class: active && !hotNodes.has(g.id) && ![...hotNodes].some(n => ancestors(n).includes(g.id)) ? "dim" : "" }, svg);
+    el("rect", { class: "group-bg", x: g.x, y: g.y, width: g.w, height: g.h, rx: 9 }, grp);
+    const t = el("text", { class: "group-title", x: g.x + 8, y: g.y + 15 }, grp);
+    t.textContent = "▾ " + truncate(blocks.get(g.id).name, 30);
+    t.style.cursor = "pointer";
+    t.addEventListener("click", ev => { ev.stopPropagation(); state.expanded.delete(g.id); select({ type: "block", id: g.id }); });
+  }
+  const edges = visibleEdges();
+  visibleEdgeKeys = new Set(edges.map(e => e.s + "\u0000" + e.d));
+  const edgeLayer = el("g", {}, svg), dotLayer = el("g", {}, svg);
+  for (const e of edges) {
+    const fam = transportFamily(e.links[0].transport);
+    const color = cssVar("--t-" + fam);
+    const hot = e.links.some(l => inv.links.has(l.id));
+    const allLegacy = e.links.every(l => l.status !== "current");
+    const p = edgePath(e);
+    const cls = "edge" + (allLegacy ? " dash" : "") + (hot ? " hot" : "") + (active && !hot ? " dim" : "");
+    const path = el("path", { class: cls, d: p.d, stroke: color, "marker-end": `url(#arr-${fam})` }, edgeLayer);
+    const hit = el("path", { class: "edge-hit", d: p.d }, edgeLayer);
+    const title = el("title", {}, hit);
+    title.textContent = e.links.map(l => `${shortName(l.from)} → ${shortName(l.to)}: ${l.label || T.transport[l.transport] || l.transport} — ${l.summary}`).join("\n");
+    hit.addEventListener("click", ev => { ev.stopPropagation(); select({ type: "links", ids: e.links.map(l => l.id) }); });
+    if (e.links.some(l => openFindings("link:" + l.id).length)) {
+      const w = el("text", { class: "warnmark", x: p.mx - 4, y: p.my - 6 }, dotLayer); w.textContent = "!";
+    }
+    const nums = e.links.flatMap(l => inv.steps.get(l.id) || []);
+    if (nums.length) {
+      const label = truncate(nums.sort((a, b) => a - b).join(","), 9);
+      const g = el("g", { class: "stepdot" }, dotLayer);
+      const w = Math.max(18, label.length * 6.5 + 8);
+      el("rect", { x: p.mx - w / 2, y: p.my - 9, width: w, height: 18, rx: 9, fill: cssVar("--accent") }, g);
+      const t = el("text", { x: p.mx, y: p.my + 3.5, "text-anchor": "middle" }, g); t.textContent = label;
+    }
+  }
+  for (const n of layout.nodes.values()) {
+    const b = blocks.get(n.id);
+    const classes = ["node", b.status];
+    if (state.sel && state.sel.type === "block" && state.sel.id === n.id) classes.push("sel");
+    if (primaryNodes.has(n.id)) classes.push("hit");
+    if (active && !hotNodes.has(n.id)) classes.push("dim");
+    const warn = subtree(n.id).some(id => openFindings("block:" + id).length);
+    if (warn) classes.push("warn");
+    const g = el("g", { class: classes.join(" "), transform: `translate(${n.x},${n.y})` }, svg);
+    el("rect", { class: "box", width: n.w, height: n.h, rx: 8 }, g);
+    const name = el("text", { class: "name", x: 10, y: 20 }, g); name.textContent = truncate(b.short || b.name, n.kids ? 22 : 28);
+    const sub = el("text", { class: "sub", x: 10, y: 37 }, g);
+    sub.textContent = truncate((T.kind[b.kind] || b.kind) + (b.status !== "current" ? " · " + T.status[b.status] : ""), 30);
+    const tt = el("title", {}, g); tt.textContent = b.name + "\n" + b.summary;
+    if (warn) { const w = el("text", { class: "warnmark", x: n.w - 12, y: 16 }, g); w.textContent = "!"; }
+    if (n.kids) {
+      const tg = el("g", { class: "toggle", transform: `translate(${n.w - 40},${n.h - 20})` }, g);
+      el("rect", { width: 34, height: 15, rx: 7 }, tg);
+      const tx = el("text", { x: 17, y: 11, "text-anchor": "middle" }, tg); tx.textContent = "▸ " + n.kids;
+      const ttl = el("title", {}, tg); ttl.textContent = U.show_inner;
+      tg.addEventListener("click", ev => { ev.stopPropagation(); state.expanded.add(n.id); select({ type: "block", id: n.id }); });
+    }
+    g.addEventListener("click", ev => { ev.stopPropagation(); select({ type: "block", id: n.id }); });
+    g.addEventListener("dblclick", ev => { ev.stopPropagation(); if (n.kids) { state.expanded.add(n.id); render(); } });
+  }
+}
+
+// ------------------------------------------------------------------- panel
+function blockLink(id) {
+  const b = blocks.get(id);
+  return h("span", { cls: "blocklink", onclick: () => focusBlock(id), title: b ? b.name : id }, shortName(id));
+}
+function dataChip(id) { const d = datas.get(id); return h("span", { cls: "chip click", onclick: () => { state.tab = "data"; select({ type: "data", id }); }, title: d.summary }, d.name); }
+function statusChip(s) { return h("span", { cls: "chip st-" + s }, T.status[s] || s); }
+function findingChip(f) { return h("span", { cls: "chip click sev-" + f.severity, onclick: () => { state.tab = "findings"; select({ type: "finding", id: f.id }); }, title: f.summary }, f.id + " · " + truncate(f.title, 46)); }
+function anchorList(anchors) {
+  if (!anchors || !anchors.length) return null;
+  return h("details", {}, h("summary", {}, `${U.anchors} (${anchors.length})`),
+    ...anchors.map(a => h("div", { cls: "mono" }, a.path, a.find ? " › " + a.find : a.regex ? " › /" + a.regex + "/" : "", a.note ? " — " + a.note : "")));
+}
+function kv(pairs) {
+  const box = h("div", { cls: "kv" });
+  for (const [k, v] of pairs) if (v !== undefined && v !== null && v !== "" && !(Array.isArray(v) && !v.length)) box.append(h("div", { cls: "k" }, k), h("div", {}, v));
+  return box;
+}
+function linkItem(l, peerSide) {
+  const peer = peerSide === "to" ? l.to : l.from;
+  const routes = (l.identifiers && l.identifiers.route) || [];
+  const other = Object.entries(l.identifiers || {}).filter(([k]) => k !== "route");
+  return h("div", { cls: "item" },
+    h("div", { cls: "t" }, peerSide === "to" ? "→ " : "← ", blockLink(peer), " · ", l.label || T.transport[l.transport] || l.transport, l.status !== "current" ? h("span", {}, " ", statusChip(l.status)) : null),
+    h("div", { cls: "d" }, l.summary),
+    kv([[U.contract, l.contract ? `${l.contract.name} (${l.contract.enforcement})` : ""], [U.waits, l.waits || ""], [U.on_error, l.on_error || ""],
+        [U.sends, (l.carries || []).length ? h("span", { cls: "chips" }, ...(l.carries || []).map(dataChip)) : ""],
+        [U.gets, (l.returns || []).length ? h("span", { cls: "chips" }, ...(l.returns || []).map(dataChip)) : ""],
+        [U.routes, routes.length ? h("div", { cls: "mono" }, routes.join("\n")) : ""],
+        ...other.map(([k, v]) => [k, h("div", { cls: "mono" }, v.join(", "))])]),
+    ...openFindings("link:" + l.id).map(findingChip),
+    anchorList([...(l.from_anchors || []), ...(l.to_anchors || []), ...((l.contract && l.contract.defined_in) || [])]));
+}
+
+function panelBlock(id) {
+  const b = blocks.get(id);
+  const kids = childrenOf.get(id) || [];
+  const outs = outLinks.get(id) || [], ins = inLinks.get(id) || [];
+  const produced = MAP.data.filter(d => d.origin === id);
+  const received = [...new Set([...ins.flatMap(l => l.carries || []), ...outs.flatMap(l => l.returns || [])])];
+  const nodes = [
+    h("h2", {}, b.name),
+    h("div", { cls: "chips" }, statusChip(b.status), h("span", { cls: "chip" }, T.kind[b.kind] || b.kind), h("span", { cls: "chip" }, laneById.get(b.lane).name), b.evidence ? h("span", { cls: "chip" }, U.evidence + ": " + T.evidence[b.evidence]) : null),
+    h("div", { cls: "summary" }, b.summary),
+    kv([[U.runs, b.runs || ""], [U.owner, b.owner || ""], [U.part_of, b.parent ? blockLink(b.parent) : ""],
+        [U.code, (b.code || []).length ? h("div", { cls: "mono" }, (b.code || []).join("\n")) : ""],
+        [U.docs, (b.docs || []).length ? h("div", { cls: "mono" }, (b.docs || []).join("\n")) : ""],
+        [U.requirements, (b.requirements || []).join(", ")]]),
+  ];
+  if (b.notes) nodes.push(h("div", { cls: "d" }, b.notes));
+  const fs = subtree(id).flatMap(x => openFindings("block:" + x));
+  if (fs.length) nodes.push(h("h3", {}, U.findings), h("div", { cls: "chips" }, ...fs.map(findingChip)));
+  if (kids.length) {
+    nodes.push(h("h3", {}, `${U.inside} (${kids.length})`), h("div", { cls: "chips" }, ...kids.map(k => h("span", { cls: "chip click", onclick: () => focusBlock(k) }, shortName(k)))));
+    nodes.push(h("button", { onclick: () => { state.expanded.has(id) ? state.expanded.delete(id) : state.expanded.add(id); render(); } }, state.expanded.has(id) ? U.collapse_on_map : U.expand_on_map));
+  }
+  if (b.waits_for && b.waits_for.length) {
+    nodes.push(h("h3", {}, U.waits_before));
+    for (const w of b.waits_for) nodes.push(h("div", { cls: "item" }, h("div", { cls: "t" }, w.what), w.on_missing ? h("div", { cls: "d" }, U.if_missing + w.on_missing) : null, anchorList(w.anchors)));
+  }
+  if (outs.length) { nodes.push(h("h3", {}, `${U.sends_calls} (${outs.length})`)); outs.forEach(l => nodes.push(linkItem(l, "to"))); }
+  if (ins.length) { nodes.push(h("h3", {}, `${U.receives} (${ins.length})`)); ins.forEach(l => nodes.push(linkItem(l, "from"))); }
+  if (produced.length || received.length) {
+    nodes.push(h("h3", {}, U.data));
+    if (produced.length) nodes.push(kv([[U.creates, h("span", { cls: "chips" }, ...produced.map(d => dataChip(d.id)))]]));
+    if (received.length) nodes.push(kv([[U.gets_data, h("span", { cls: "chips" }, ...received.map(dataChip))]]));
+  }
+  const fl = [...new Set([...outs, ...ins].flatMap(l => (flowsByLink.get(l.id) || []).map(([f]) => f.id)))];
+  if (fl.length) nodes.push(h("h3", {}, U.in_flows), ...fl.map(fid => h("div", { cls: "item click", onclick: () => { state.tab = "flows"; select({ type: "flow", id: fid }); } }, h("div", { cls: "t" }, flows.get(fid).name))));
+  nodes.push(anchorList(b.anchors));
+  return nodes;
+}
+
+function panelLinks(ids) {
+  const ls = ids.map(id => links.get(id));
+  const first = ls[0];
+  const nodes = [h("h2", {}, shortName(first.from), " → ", shortName(first.to)), h("div", { cls: "d" }, fmt(U.links_n, { n: ls.length }))];
+  for (const l of ls) {
+    nodes.push(h("div", { cls: "item" },
+      h("div", { cls: "t" }, blockLink(l.from), " → ", blockLink(l.to), " · ", l.label || T.transport[l.transport] || l.transport, " ", statusChip(l.status)),
+      h("div", { cls: "d" }, l.summary),
+      kv([[U.transport, T.transport[l.transport] || l.transport], [U.sync, l.sync || ""], [U.contract, l.contract ? `${l.contract.name} (${l.contract.enforcement})` : ""],
+          [U.waits, l.waits || ""], [U.on_error, l.on_error || ""], [U.envs, (l.envs || []).join(", ")], [U.evidence, l.evidence ? T.evidence[l.evidence] : ""],
+          [U.sends, (l.carries || []).length ? h("span", { cls: "chips" }, ...(l.carries || []).map(dataChip)) : ""],
+          [U.gets, (l.returns || []).length ? h("span", { cls: "chips" }, ...(l.returns || []).map(dataChip)) : ""],
+          ...Object.entries(l.identifiers || {}).map(([k, v]) => [k, h("div", { cls: "mono" }, v.join("\n"))])]),
+      l.notes ? h("div", { cls: "d" }, l.notes) : null,
+      ...openFindings("link:" + l.id).map(findingChip),
+      ...(flowsByLink.get(l.id) || []).map(([f, i]) => h("div", { cls: "d" }, U.flow_step, h("span", { cls: "blocklink", onclick: () => { state.tab = "flows"; state.step = i; select({ type: "flow", id: f.id }, true); } }, fmt(U.flow_step_n, { name: f.name, n: i + 1 })))),
+      anchorList([...(l.from_anchors || []), ...(l.to_anchors || []), ...((l.contract && l.contract.defined_in) || [])])));
+  }
+  return nodes;
+}
+
+function seqDiagram(flow) {
+  const parts = [];
+  for (const s of flow.steps) { const l = links.get(s.link); for (const e of [l.from, l.to]) if (!parts.includes(e)) parts.push(e); }
+  const COL = 118, TOPY = 34, ROW = 40;
+  const width = Math.max(340, parts.length * COL + 20), height = TOPY + flow.steps.length * ROW + 16;
+  const svg = document.createElementNS(SVGNS, "svg");
+  svg.setAttribute("class", "seq"); svg.setAttribute("width", width); svg.setAttribute("height", height);
+  const x = id => 10 + parts.indexOf(id) * COL + COL / 2;
+  const defs = el("defs", {}, svg);
+  const m = el("marker", { id: "seqarr", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" }, defs);
+  el("path", { d: "M0,0 L10,5 L0,10 z", fill: cssVar("--accent") }, m);
+  parts.forEach(p => {
+    const t = el("text", { class: "ptitle", x: x(p), y: 16, "text-anchor": "middle" }, svg); t.textContent = truncate(shortName(p), 18);
+    const tt = el("title", {}, t); tt.textContent = blocks.get(p).name;
+    el("line", { class: "life", x1: x(p), y1: 22, x2: x(p), y2: height - 6 }, svg);
+  });
+  flow.steps.forEach((s, i) => {
+    const l = links.get(s.link);
+    const [a, b] = s.reply ? [l.to, l.from] : [l.from, l.to];
+    const y = TOPY + i * ROW + 12;
+    const g = el("g", { class: state.step === i ? "sel" : "" }, svg);
+    g.style.cursor = "pointer";
+    g.addEventListener("click", () => { state.step = state.step === i ? null : i; render(); });
+    el("path", { class: "arrow" + (s.reply ? " reply" : ""), d: `M${x(a)},${y} L${x(b)},${y}`, "marker-end": "url(#seqarr)" }, g);
+    const tx = Math.min(x(a), x(b)) + 4;
+    const t = el("text", { x: tx, y: y - 4 }, g);
+    const n = el("tspan", { class: "num" }, t); n.textContent = (i + 1) + ". ";
+    const a2 = el("tspan", {}, t); a2.textContent = truncate(s.action, Math.max(14, Math.floor(Math.abs(x(b) - x(a)) / 6)));
+    if (s.waits) { const w = el("text", { class: "wait", x: tx, y: y + 13 }, g); w.textContent = U.wait_prefix + truncate(s.waits, Math.max(16, Math.floor(Math.abs(x(b) - x(a)) / 5.6))); }
+    const tt = el("title", {}, g); tt.textContent = `${i + 1}. ${s.action}${s.waits ? "\n" + U.waits_cap + s.waits : ""}${s.then ? "\n" + U.then_cap + s.then : ""}`;
+  });
+  return svg;
+}
+
+function panelFlow(id) {
+  const f = flows.get(id);
+  const nodes = [h("h2", {}, f.name), h("div", { cls: "chips" }, statusChip(f.status), f.evidence ? h("span", { cls: "chip" }, U.evidence + ": " + T.evidence[f.evidence]) : null, ...(f.requirements || []).map(r => h("span", { cls: "chip" }, r))),
+    h("div", { cls: "summary" }, f.summary), kv([[U.trigger, f.trigger || ""], [U.result, f.result || ""]]),
+    h("div", { cls: "seqwrap" }, seqDiagram(f)), h("h3", {}, U.steps)];
+  f.steps.forEach((s, i) => {
+    const l = links.get(s.link);
+    const [a, b] = s.reply ? [l.to, l.from] : [l.from, l.to];
+    nodes.push(h("div", { cls: "item click" + (state.step === i ? " active" : ""), onclick: () => { state.step = state.step === i ? null : i; render(); } },
+      h("div", { cls: "t" }, `${i + 1}. `, blockLink(a), " → ", blockLink(b), " · ", l.label || T.transport[l.transport] || l.transport),
+      h("div", {}, s.action),
+      s.waits ? h("div", { cls: "d" }, U.waits_cap + s.waits) : null,
+      s.then ? h("div", { cls: "d" }, U.then_cap + s.then) : null,
+      s.note ? h("div", { cls: "d" }, s.note) : null));
+  });
+  if (f.notes) nodes.push(h("div", { cls: "d" }, f.notes));
+  const fs = openFindings("flow:" + id);
+  if (fs.length) nodes.push(h("h3", {}, U.findings), h("div", { cls: "chips" }, ...fs.map(findingChip)));
+  return nodes;
+}
+
+function panelData(id) {
+  const d = datas.get(id);
+  const via = carriers.get(id) || [];
+  const nodes = [h("h2", {}, d.name), h("div", { cls: "chips" }, h("span", { cls: "chip" }, T.dataKind[d.kind] || d.kind), d.sensitivity ? h("span", { cls: "chip" }, d.sensitivity) : null),
+    h("div", { cls: "summary" }, d.summary), kv([[U.created_by, blockLink(d.origin)],
+      [U.also_from, (d.also_from || []).length ? h("div", {}, ...(d.also_from || []).map(a => h("div", {}, blockLink(a.block), " — ", a.reason))) : ""],
+      [U.received_by, (d.consumers || []).length ? h("span", {}, ...(d.consumers || []).flatMap((c, i) => [i ? ", " : "", blockLink(c)])) : ""],
+      [U.stored, (d.stored_in || []).length ? h("div", {}, ...(d.stored_in || []).map(s => h("div", {}, blockLink(s.block), ": ", s.where))) : ""]])];
+  if (via.length) {
+    nodes.push(h("h3", {}, `${U.data_path} (${via.length})`));
+    via.forEach(hop => nodes.push(h("div", { cls: "item click", onclick: () => select({ type: "links", ids: [hop.link.id] }) }, h("div", { cls: "t" }, blockLink(hop.src), " → ", blockLink(hop.dst), " · ", hop.link.label || T.transport[hop.link.transport] || hop.link.transport, hop.src !== hop.link.from ? U.in_reply : ""), h("div", { cls: "d" }, hop.link.summary))));
+  } else nodes.push(h("div", { cls: "empty" }, U.not_carried));
+  if (d.notes) nodes.push(h("div", { cls: "d" }, d.notes));
+  const fs = openFindings("data:" + id);
+  if (fs.length) nodes.push(h("h3", {}, U.findings), h("div", { cls: "chips" }, ...fs.map(findingChip)));
+  nodes.push(anchorList([...(d.defined_in || []), ...(d.anchors || [])]));
+  return nodes;
+}
+
+function panelFinding(id) {
+  const f = findings.get(id);
+  const where = (f.where || []).map(r => {
+    const [kind, rid] = r.split(":");
+    if (kind === "block") return h("div", {}, U.ref_block, blockLink(rid));
+    if (kind === "link") { const l = links.get(rid); return h("div", {}, U.ref_link, blockLink(l.from), " → ", blockLink(l.to)); }
+    if (kind === "data") return h("div", {}, U.ref_data, dataChip(rid));
+    if (kind === "flow") return h("div", {}, U.ref_flow, h("span", { cls: "blocklink", onclick: () => { state.tab = "flows"; select({ type: "flow", id: rid }); } }, flows.get(rid).name));
+    return h("div", {}, r);
+  });
+  return [h("h2", {}, f.id + " — " + f.title),
+    h("div", { cls: "chips" }, h("span", { cls: "chip sev-" + f.severity }, T.severity[f.severity]), h("span", { cls: "chip" }, T.fstatus[f.status]), h("span", { cls: "chip" }, f.kind)),
+    h("div", { cls: "summary" }, f.summary),
+    kv([[U.where, where.length ? h("div", {}, ...where) : ""], [U.impact, f.impact || ""], [U.next_step, f.next_step || ""], [U.owner, f.owner || ""],
+        [U.defer, f.defer_reason || ""], [U.since, f.since || ""], [U.closed_by, f.closed_by || ""], [U.requirements, (f.requirements || []).join(", ")],
+        [U.detector, (f.detected_by || []).length ? h("div", { cls: "mono" }, (f.detected_by || []).join("\n")) : ""]]),
+    f.notes ? h("div", { cls: "d" }, f.notes) : null,
+    anchorList(f.evidence)];
+}
+
+function legend() {
+  const box = h("div", { cls: "legend" });
+  for (const [fam, text] of Object.entries(FAMILY_RU)) {
+    const s = document.createElementNS(SVGNS, "svg"); s.setAttribute("width", "22"); s.setAttribute("height", "10");
+    el("line", { x1: 0, y1: 5, x2: 22, y2: 5, stroke: cssVar("--t-" + fam), "stroke-width": 2.4 }, s);
+    box.append(s, h("div", {}, text));
+  }
+  const s = document.createElementNS(SVGNS, "svg"); s.setAttribute("width", "22"); s.setAttribute("height", "10");
+  el("line", { x1: 0, y1: 5, x2: 22, y2: 5, stroke: cssVar("--muted"), "stroke-width": 2, "stroke-dasharray": "5 3" }, s);
+  box.append(s, h("div", {}, U.dashed));
+  return box;
+}
+
+function panelIntro() {
+  const open = MAP.findings.filter(f => f.status !== "closed");
+  const bySev = sev => open.filter(f => f.severity === sev).length;
+  return [h("h2", {}, U.how_to),
+    h("div", { cls: "summary" }, U.how_to_d),
+    h("div", { cls: "chips" }, h("span", { cls: "chip" }, fmt(U.n_blocks, { n: MAP.blocks.length })), h("span", { cls: "chip" }, fmt(U.n_links, { n: MAP.links.length })), h("span", { cls: "chip" }, fmt(U.n_flows, { n: MAP.flows.length })), h("span", { cls: "chip" }, fmt(U.n_data, { n: MAP.data.length }))),
+    open.length ? h("div", { cls: "warnbox" }, fmt(U.open_findings, { open: open.length, blocker: bySev("blocker"), major: bySev("major") }), h("span", { cls: "blocklink", onclick: () => { state.tab = "findings"; render(); } }, U.open_list)) : null,
+    h("h3", {}, U.link_colors), legend(),
+    h("h3", {}, U.evidence_h), h("div", { cls: "d" }, U.evidence_d)];
+}
+
+function listPanel() {
+  if (state.tab === "flows") {
+    return [h("h2", {}, U.tab_flows), h("div", { cls: "d" }, U.flows_d),
+      ...MAP.flows.map(f => h("div", { cls: "item click", onclick: () => select({ type: "flow", id: f.id }) }, h("div", { cls: "t" }, f.name, f.status !== "current" ? h("span", {}, " ", statusChip(f.status)) : null), h("div", { cls: "d" }, f.summary)))];
+  }
+  if (state.tab === "data") {
+    const kinds = [...new Set(MAP.data.map(d => d.kind))];
+    const nodes = [h("h2", {}, U.data_h), h("div", { cls: "d" }, U.data_d)];
+    for (const k of kinds) {
+      nodes.push(h("h3", {}, T.dataKind[k] || k));
+      MAP.data.filter(d => d.kind === k).forEach(d => nodes.push(h("div", { cls: "item click", onclick: () => select({ type: "data", id: d.id }) }, h("div", { cls: "t" }, d.name), h("div", { cls: "d" }, U.created_by + ": " + shortName(d.origin)))));
+    }
+    return nodes;
+  }
+  if (state.tab === "findings") {
+    const order = ["blocker", "major", "minor", "info"], fsOrder = ["open", "accepted", "closed"];
+    const sorted = [...MAP.findings].sort((a, b) => fsOrder.indexOf(a.status) - fsOrder.indexOf(b.status) || order.indexOf(a.severity) - order.indexOf(b.severity) || a.id.localeCompare(b.id));
+    return [h("h2", {}, U.findings), h("div", { cls: "d" }, U.findings_d),
+      ...sorted.map(f => h("div", { cls: "item click", onclick: () => select({ type: "finding", id: f.id }) }, h("div", { cls: "t" }, h("span", { cls: "chip sev-" + f.severity }, T.severity[f.severity]), " ", f.id, " · ", f.title), h("div", { cls: "d" }, T.fstatus[f.status] + (f.owner ? " · " + f.owner : ""))))];
+  }
+  return panelIntro();
+}
+
+function renderPanel() {
+  const panel = document.getElementById("panel");
+  panel.innerHTML = "";
+  const sel = state.sel;
+  let nodes;
+  if (!sel) nodes = listPanel();
+  else {
+    const back = h("button", { onclick: () => select(null) }, "← " + (state.tab === "map" ? U.overview : TABS.find(t => t[0] === state.tab)[1]));
+    const body = sel.type === "block" ? panelBlock(sel.id) : sel.type === "links" ? panelLinks(sel.ids) : sel.type === "flow" ? panelFlow(sel.id) : sel.type === "data" ? panelData(sel.id) : panelFinding(sel.id);
+    nodes = [back, ...body];
+  }
+  for (const n of nodes) if (n) panel.append(n);
+}
+
+function renderControls() {
+  const tabs = document.getElementById("tabs"); tabs.innerHTML = "";
+  for (const [id, name] of TABS) tabs.append(h("button", { cls: state.tab === id ? "on" : "", onclick: () => { state.tab = id; state.sel = null; state.step = null; render(); } }, name));
+  const planes = document.getElementById("planes"); planes.innerHTML = "";
+  for (const [id, name] of PLANES) planes.append(h("button", { cls: state.plane === id ? "on" : "", onclick: () => { state.plane = id; render(); } }, name));
+  const sts = document.getElementById("statuses"); sts.innerHTML = "";
+  for (const s of STATUS_ORDER) {
+    const count = MAP.blocks.filter(b => b.status === s).length;
+    if (!count) continue;
+    sts.append(h("button", { cls: state.statuses.has(s) ? "on" : "", onclick: () => { state.statuses.has(s) ? state.statuses.delete(s) : state.statuses.add(s); if (!state.statuses.size) state.statuses.add("current"); render(); } }, `${T.status[s]} (${count})`));
+  }
+}
+
+function writeHash() {
+  const parts = [`tab=${state.tab}`, `plane=${state.plane}`];
+  if (state.sel) parts.push("sel=" + (state.sel.type === "links" ? "links:" + state.sel.ids.join(",") : state.sel.type + ":" + state.sel.id));
+  if (state.step !== null) parts.push("step=" + state.step);
+  if (state.expanded.size) parts.push("open=" + [...state.expanded].join(","));
+  const hash = "#" + parts.join("&");
+  if (location.hash !== hash) history.replaceState(null, "", hash);
+}
+function readHash() {
+  const params = new URLSearchParams(location.hash.slice(1));
+  if (TABS.some(t => t[0] === params.get("tab"))) state.tab = params.get("tab");
+  if (PLANES.some(p => p[0] === params.get("plane"))) state.plane = params.get("plane");
+  const open = params.get("open"); if (open) open.split(",").filter(id => blocks.has(id)).forEach(id => state.expanded.add(id));
+  const sel = params.get("sel");
+  if (sel) {
+    const i = sel.indexOf(":"), type = sel.slice(0, i), id = sel.slice(i + 1);
+    if (type === "links") { const ids = id.split(",").filter(x => links.has(x)); if (ids.length) state.sel = { type, ids }; }
+    else if ({ block: blocks, flow: flows, data: datas, finding: findings }[type] && { block: blocks, flow: flows, data: datas, finding: findings }[type].has(id)) state.sel = { type, id };
+  }
+  const step = params.get("step"); if (step !== null && state.sel && state.sel.type === "flow") state.step = Number(step);
+}
+
+function ensureVisible(ids) {
+  for (const id of ids) {
+    const b = blocks.get(id); if (!b) continue;
+    const root = blocks.get(rootOf(id));
+    if (!laneVisible(root.lane)) state.plane = "all";
+    for (const a of ancestors(id)) state.statuses.add(blocks.get(a).status);
+  }
+}
+function focusBlock(id) {
+  ensureVisible([id]);
+  for (const a of ancestors(id).slice(1)) state.expanded.add(a);
+  select({ type: "block", id });
+}
+function select(sel, keepStep) {
+  state.sel = sel;
+  if (!keepStep) state.step = null;
+  if (sel) {
+    const inv = involvement();
+    ensureVisible([...inv.blocks]);
+    if (sel.type === "links") for (const id of sel.ids) { const l = links.get(id); state.statuses.add(l.status); }
+    if (sel.type === "flow") for (const s of flows.get(sel.id).steps) state.statuses.add(links.get(s.link).status);
+  }
+  render();
+}
+function render() { renderControls(); renderCanvas(); renderPanel(); writeHash(); }
+
+// -------------------------------------------------------------------- boot
+document.getElementById("title").textContent = MAP.meta.title;
+document.getElementById("metaLine").textContent = MAP.meta.verified_against ? fmt(U.verified_meta, { sha: MAP.meta.verified_against.slice(0, 12), date: MAP.meta.verified_on || "?" }) : "";
+document.getElementById("title").textContent = MAP.meta.title || U.title;
+document.getElementById("search").placeholder = U.search;
+document.getElementById("search").setAttribute("aria-label", U.search_label);
+document.getElementById("themeBtn").title = U.theme;
+document.getElementById("planeLabel").textContent = U.plane;
+if (!PLANES.length) document.getElementById("planeGroup").style.display = "none";
+document.getElementById("statusLabel").textContent = U.statuses;
+document.getElementById("expandAll").textContent = U.expand_all;
+document.getElementById("collapseAll").textContent = U.collapse_all;
+document.getElementById("zoomText").textContent = U.zoom;
+document.getElementById("zoomOut").title = U.zoom_out;
+document.getElementById("zoomFit").title = U.zoom_fit;
+document.getElementById("zoomIn").title = U.zoom_in;
+document.getElementById("canvas").setAttribute("aria-label", U.canvas);
+document.getElementById("search").addEventListener("input", ev => { state.search = ev.target.value.trim(); renderCanvas(); });
+document.getElementById("search").addEventListener("keydown", ev => {
+  if (ev.key !== "Enter" || !state.search) return;
+  const q = state.search.toLowerCase();
+  const hit = MAP.blocks.find(b => (b.name + " " + b.id + " " + (b.short || "")).toLowerCase().includes(q)) || MAP.blocks.find(b => b.summary.toLowerCase().includes(q));
+  if (hit) { state.search = ""; ev.target.value = ""; focusBlock(hit.id); return; }
+  const d = MAP.data.find(x => (x.name + " " + x.id).toLowerCase().includes(q));
+  if (d) { state.search = ""; ev.target.value = ""; state.tab = "data"; select({ type: "data", id: d.id }); }
+});
+document.getElementById("expandAll").addEventListener("click", () => { for (const [id] of childrenOf) state.expanded.add(id); render(); });
+document.getElementById("collapseAll").addEventListener("click", () => { state.expanded.clear(); render(); });
+function currentZoom() { const svg = document.getElementById("canvas"); return (Number(svg.getAttribute("width")) || layout.width) / layout.width; }
+document.getElementById("zoomIn").addEventListener("click", () => { zoom = Math.min(2, Math.round((currentZoom() + 0.1) * 10) / 10); renderCanvas(); });
+document.getElementById("zoomOut").addEventListener("click", () => { zoom = Math.max(0.4, Math.round((currentZoom() - 0.1) * 10) / 10); renderCanvas(); });
+document.getElementById("zoomFit").addEventListener("click", () => { zoom = null; renderCanvas(); });
+window.addEventListener("resize", () => { if (zoom === null) renderCanvas(); });
+function applyTheme(theme) { if (theme) document.documentElement.setAttribute("data-theme", theme); else document.documentElement.removeAttribute("data-theme"); }
+try { applyTheme(localStorage.getItem("system-map-theme")); } catch (e) { /* storage unavailable: follow the OS theme */ }
+document.getElementById("themeBtn").addEventListener("click", () => {
+  const dark = document.documentElement.getAttribute("data-theme") === "dark" || (!document.documentElement.getAttribute("data-theme") && matchMedia("(prefers-color-scheme: dark)").matches);
+  const next = dark ? "light" : "dark";
+  applyTheme(next);
+  try { localStorage.setItem("system-map-theme", next); } catch (e) { /* ignore */ }
+  render();
+});
+readHash();
+render();
+</script>
+</body>
+</html>

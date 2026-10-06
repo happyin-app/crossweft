@@ -1,0 +1,20 @@
+{
+  "name": "crossweft",
+  "interface": {
+    "displayName": "Crossweft Plugins"
+  },
+  "plugins": [
+    {
+      "name": "crossweft",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/happyin-app/crossweft.git"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
