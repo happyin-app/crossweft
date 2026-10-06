@@ -120,7 +120,11 @@ def _import(path: Path, kind: str) -> ModuleType:
     sys.modules[name] = module
     failed = True
     try:
-        spec.loader.exec_module(module)
+        # Compile the file as it is now. The loader's bytecode cache is keyed by
+        # mtime (seconds) and size, so a plugin edited twice within a second to the
+        # same length ran its stale .pyc; compiling the source also keeps
+        # __pycache__ out of the user's repository.
+        exec(compile(path.read_bytes(), str(path), "exec"), module.__dict__)
         failed = False
     finally:
         try:

@@ -304,6 +304,28 @@ class JointPlugins(Fixture):
         self.assertEqual(code, 1, output)
         self.assertIn("joint plugin ports", output)
 
+    def test_an_edit_with_the_same_size_and_mtime_is_seen(self) -> None:
+        # Python's bytecode cache is keyed by mtime (whole seconds) and size: an
+        # edit inside the same second to the same length must still run
+        import contextlib
+        import io
+        import os
+        self.setup_repo(PORTS)
+        path = self.root / "tools/joints/joints_ports.py"
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(engine.run_joint_self_tests(self.root), 0)
+        stamp = path.stat()
+        edited = PORTS.replace("    return 0\n", "    return 3\n")
+        self.assertEqual(len(edited), len(PORTS))
+        path.write_bytes(edited.encode("utf-8"))
+        os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            code = engine.run_joint_self_tests(self.root)
+        self.assertEqual(code, 1, buffer.getvalue())
+        self.assertFalse((path.parent / "__pycache__").exists(),
+                         "plugins are compiled from source; no bytecode in the user's repo")
+
     def test_self_test_says_when_no_plugins_are_configured(self) -> None:
         import contextlib
         import io

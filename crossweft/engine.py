@@ -4475,8 +4475,9 @@ def run_baseline(cfg: Config, owner: str | None, next_step: str | None,
         })
         next_id += 1
     try:
-        target.write_text(json.dumps({"findings": findings}, indent=2, ensure_ascii=False) + "\n",
-                          encoding="utf-8", newline="\n")
+        # open(newline=) rather than Path.write_text(newline=), which needs Python 3.10
+        with open(target, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps({"findings": findings}, indent=2, ensure_ascii=False) + "\n")
     except OSError as exc:
         out(f"[ERR] could not write {shown}: {exc}")
         return 2
