@@ -368,7 +368,10 @@ class Within(unittest.TestCase):
         except (OSError, NotImplementedError):
             self.skipTest("cannot create a symlink here")
         self.assertAgrees("web/Link/b.ts", False)
-        self.assertAgrees("web/link/b.ts", False)      # case-insensitive file systems
+        # on a case-insensitive file system `link` opens the symlink `Link`; on a
+        # case-sensitive one it is a plain (missing) directory inside the tree
+        case_insensitive = (self.root / "WEB").exists()
+        self.assertAgrees("web/link/b.ts", not case_insensitive)
         self.assertAgrees("web/file.ts", False)
 
     @unittest.skipUnless(sys.platform == "win32", "junctions are a Windows feature")
