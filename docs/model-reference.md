@@ -112,6 +112,16 @@ on one side at most:
   {"path": "server/main.go", "side": "api", "regex": "APIVersion = \"([^\"]+)\""}]}
 ```
 
+`side` (required, non-empty) is the label a point's value is reported under.
+It does **not** decide which end of the link a file is on -- the file's path
+does (see Guards above). Any label is allowed (`"server (Go)"`, `"spec"`); a
+label that is a **block id** is a claim and is checked: that block, a part of
+it, or a block containing it must hold the file's `code`, otherwise the model
+is refused with the blocks that do hold it. A block that is not an end of the
+link is fine when it holds the file (a join may read more than two files).
+Measured before this rule (2026-10-07): in a real map, 638 of 644 join points
+used free labels and all 6 block-id sides named the file's own block.
+
 Each point's regex is applied to its file; **every** match counts, so a second,
 drifted definition on one side is caught too. Capture groups are joined with
 `,`. Optional per point: `transform` (`unescape-c`, `lower`, `strip`,
@@ -143,6 +153,28 @@ missing, or a glob that matches nothing, fails the check (key
 entries keep the side non-empty. An entry that names an existing file is read
 as that file even when it contains glob characters (`web/orders/[id]/page.ts`).
 
+### Importing guards from a schema
+
+When one side of a seam is a schema and the other is hand-written,
+`crossweft import openapi <spec.json> --against <file> [--link <id>]` or
+`crossweft import proto <file.proto> --against <file>` prints ready-to-paste
+`sets` and `joins`: component-schema properties and message fields become a
+set of field names, enums a set of values, `info.version` a join, OpenAPI
+`paths` a `right-subset` set (plus the `identifiers.route` list for the link,
+prefixed with the path of the first server URL). Every regex is tried before it
+is printed: the schema side must reproduce exactly what the schema declares,
+and the hand-written side is the region of `--against` that agrees best with
+it. A side that matched nothing is marked `NOT READY` and left out of the paste
+block; a guard that already disagrees says so. It never writes the model.
+
+OpenAPI is read as JSON only (3.x, pretty-printed, one key per line): the
+standard library has no YAML parser, so convert YAML first. A .proto file is
+tokenized with its comments stripped (messages, nested messages, `oneof`, `map`
+fields, enums). Exit codes: `0` suggestions printed, `1` the schema was read
+but nothing usable matched, `2` the schema (or `--against`) cannot be read.
+Names are compared as written: a `snake_case` schema against a `camelCase`
+client, or `STATUS_PAID` against `"paid"`, shows up as drift to review.
+
 ### `pairs` -- duplicated regions that cannot be compared by value
 
 ```json
@@ -171,6 +203,8 @@ be excused by a finding.
 ```json
 "route_scan": {
   "routers": [{"path": "server/main.go", "scanner": "go-chi"},
+              {"path": "web/server.js", "scanner": "express",
+               "receivers": {"app": "", "axios": null}},
               {"path": "api/app.py", "scanner": "regex", "prefix": "/v1",
                "pattern": "@app\\.(?P<method>get|post|put|delete)\\(\"(?P<path>/[^\"]*)\""}],
   "router_search": ["server/**/*.go"],
@@ -192,10 +226,56 @@ be excused by a finding.
   `chi.Router` / `*chi.Mux`), or on any other receiver when a handler follows
   a path-like argument (one containing a `"/..."` literal, or a name the file
   sets to one). Write it as a literal, or record a finding with that key.
-  `router_search` finds `chi.NewRouter()` files that are neither scanned nor
-  ignored.
+- `express` (Express and Fastify, `.js`/`.ts`), `fastapi`, `flask`, `gin` and
+  `echo` follow the routers the file itself creates and how they are joined:
+  - `express`: `app`/`router` `.get`/`.post`/... (`.all` = `ANY`), path arrays,
+    `router.route('/x').get(h).put(h)`, `app.use('/prefix', [mw, ...] router)`
+    for a router created in the file (`express()`, `express.Router()`,
+    `Router()`; mounted twice = served twice), Fastify `fastify.get(...)`,
+    `fastify.route({method, url})`. A template literal without `${...}` is a
+    literal; with one it is unscannable.
+  - `fastapi`: `@app.get("/x")`/`@router.post(...)`, `api_route(...,
+    methods=[...])`, `add_api_route`, `websocket` (= `GET`),
+    `APIRouter(prefix=...)` and `include_router(router, prefix=...)` (nested
+    routers compose), `app.mount("/x", ...)`.
+  - `flask`: `@app.route("/x", methods=[...])` (default `GET`), `@bp.get(...)`,
+    `add_url_rule`, `Blueprint(..., url_prefix=...)`, and
+    `register_blueprint(bp, url_prefix=...)`, whose prefix replaces the
+    blueprint's own; nested blueprints compose.
+  - `gin`: `r.GET(...)`/`Any`/`Handle(method, ...)`/`Match([]string{...}, ...)`,
+    `StaticFile` (= `GET`), `Static`/`StaticFS` (= `MOUNT`),
+    `g := r.Group("/v1")` and nested groups, inline `r.Group("/x").POST(...)`.
+  - `echo`: `e.GET(...)`/`Any`/`Add(method, ...)`/`Match(...)`, `File` (= `GET`),
+    `Static` (= `MOUNT`), `g := e.Group("/admin")` and nested groups.
+
+  Parameters are reported as `{name}` whatever the spelling (`:id`, `:id?`,
+  `:id(\d+)`, `<int:id>`, `{id:path}`). Comments and strings are skipped
+  (JavaScript regex literals are not recognised). Anything mounted below a
+  literal prefix that the file does not create (a router imported from another
+  file, a sub-app, a static directory, a Fastify plugin) is a `MOUNT`
+  registration; without a prefix it is an `[INFO]` line naming the call, so
+  that file is scanned as its own router entry. What the scanner cannot read
+  statically is a problem `route:unscannable:<file>:...`, never a skipped
+  route: a path, method or prefix that is not a literal (a constant, an
+  f-string, a template with `${...}`, a concatenation) -- a group or mount
+  prefix also covers the routes below it; a route on a receiver the file
+  neither creates nor names in `receivers` (`module.exports = (app) => ...`,
+  or a client call such as `axios.get('/x', ...)`), keyed
+  `<receiver>.<verb> <path>`; and the routes on a router parameter or field
+  typed as a group (`rg *gin.RouterGroup`, `g *echo.Group`,
+  `router: APIRouter`), keyed `prefix <name>`. `receivers` maps such a name to
+  its prefix (`""` for the root) or to `null` (not a router: its calls are
+  ignored). A file in which a native scanner finds no registration and
+  nothing unscannable is the fatal `route:scan-empty:<file>`: zero scanned is
+  never a pass.
 - `regex` takes a pattern with a named `path` group and an optional `method`
   group (none = `ANY`).
+- `prefix` is prepended to every route of its router entry (any scanner);
+  `function_prefixes` is go-chi only, `receivers` native scanners only.
+- `router_search` reports every file that builds a router of a supported kind
+  (`chi.NewRouter()`, `express()`, `express.Router(`, `fastify(`, `FastAPI(`,
+  `APIRouter(`, `Flask(`, `Blueprint(`, `gin.Default()`, `gin.New()`,
+  `echo.New()`) and is neither scanned nor ignored.
 - Parameters compare equal in any spelling: `{id}`, `:id`, `<int:id>`.
 
 Checks, over **current** links only (a planned link may name a route nobody

@@ -26,6 +26,19 @@ Code shows as a non-blocking hook error (exit 0 would hide the note), and
 an unreadable payload or a working directory that does not exist is reported
 as "seams were NOT checked".
 
+## What an agent runs
+
+| When | Command |
+|---|---|
+| before editing a file another component depends on | `crossweft impact <path>` -- or the `impact` / `other_side` tools of [`crossweft mcp`](#mcp-any-mcp-client) |
+| before finishing | the full `crossweft check`: exit 0 = pass, 1 = problems (each with a key), 2 = no verdict (unreadable config or model, nothing scanned) -- never a pass |
+| before a commit, in a large repository | `crossweft check --changed HEAD` -- fast, but blind to drift committed earlier, so never the final check ([details](#large-repositories-check---changed)) |
+| after changing one region of a `pair` | re-read every region, then `crossweft attest <id> --reason "..."`. Attest refuses when only some regions changed; `--other-side-unchanged` records that the unchanged ones were re-read and already agree -- it is a claim that lands in review, not an override |
+| adding a seam to the map | `crossweft discover` (values typed into two languages); `crossweft import openapi\|proto <schema> --against <file>` when one side is a schema |
+| adopting crossweft in a repository with existing drift | `crossweft baseline --owner ... --next-step ...`, once, after the map is written -- never to silence new drift |
+
+Every command and flag: [cli.md](cli.md).
+
 ## The repository carries the harness
 
 The agent loop should not depend on each developer installing something. `crossweft init`
@@ -143,21 +156,78 @@ to the agent, so only the stop hook is useful: it sends the agent back with a
 **Aider** -- no hook protocol; use the test command, which Aider feeds back to
 the model when it fails: `aider --test-cmd "crossweft check" --auto-test`.
 
+## MCP (any MCP client)
+
+`crossweft mcp` is a read-only [Model Context Protocol](https://modelcontextprotocol.io)
+server on stdio (protocol 2025-06-18, stdlib only). It lets an agent ask the
+same questions the hooks answer, whenever it wants:
+
+| Tool | Arguments | Returns |
+|---|---|---|
+| `check` | `paths` (optional) | status `ok` / `problems` / `error` (exit 0 / 1 / 2 of `crossweft check`), counts, and the problems; with `paths`, only those located there -- the status and counts stay those of the whole check |
+| `impact` | `paths` | the seams through those files, the other side of each to re-read, and the guards that compare them |
+| `show` | `id` | one entity, bare or `kind:id` as `check` prints it |
+| `discover` | `limit` (default 20) | the top unmapped cross-language values, each with a suggested join |
+| `other_side` | `path` | just the files to re-read after editing that file |
+
+Paths are relative to the repository root. Every result carries a text
+summary and `structuredContent` JSON. A call that could not produce a verdict
+(no `crossweft.json`, an unreadable model, a path outside the repository, an
+id that does not exist) answers `isError: true` with the reason; a bad or
+unknown argument is a JSON-RPC error. Nothing is written to disk.
+
+Claude Code -- `.mcp.json` in the repository (or `claude mcp add crossweft -- crossweft mcp`):
+
+```json
+{"mcpServers": {"crossweft": {"command": "crossweft", "args": ["mcp"]}}}
+```
+
+Cursor -- `.cursor/mcp.json`, same shape:
+
+```json
+{"mcpServers": {"crossweft": {"command": "crossweft", "args": ["mcp"]}}}
+```
+
+The server finds `crossweft.json` by walking up from the directory the client
+starts it in; if your client starts servers elsewhere, pass the root:
+`"args": ["--root", "/path/to/repo", "mcp"]`. For a vendored copy use
+`"command": "python", "args": ["-m", "crossweft", "mcp"]`.
+
 ## Any agent: AGENTS.md
 
-`crossweft agents` writes this block for you. For an agent that reads another
-file (`GEMINI.md`, `.cursorrules`), paste it there:
+`crossweft agents` writes this block (between markers, with your `model_dir`)
+for you. For an agent that reads another file (`GEMINI.md`, `.cursorrules`),
+paste it there:
 
 ```markdown
-## Seams (crossweft)
+## Component seams (crossweft)
 
-This repository declares where its components must agree -- routes, headers,
-protocol versions, DTO fields, env vars, duplicated algorithms -- in
-`seams/model/`. Before editing a file that another component depends on, run
-`crossweft impact <file>` and re-read the other side it names. Change both
-sides together. Before you finish, `crossweft check` must print
-`RESULT: PASS`. Never weaken a guard to make it pass; if a drift must stay,
-record a finding with an owner and a next step.
+This repository keeps a map of its components and of every place where two of
+them must agree -- routes, headers, protocol versions, DTO fields, env vars,
+pipe names, duplicated algorithms -- in `<model_dir>`, and `crossweft check`
+verifies the map against the code. Agents write and maintain the map, and
+the check makes sure it cannot drift from the code.
+
+- Before editing a file another component depends on, run
+  `crossweft impact <path>` (or the `impact` tool of `crossweft mcp`): it names
+  the file on the other side and the guard that compares them. Change both
+  sides.
+- Before you finish, `crossweft check` must print `RESULT: PASS` (exit 0;
+  1 = problems, 2 = no verdict, which is never a pass). `crossweft check
+  --changed HEAD` is a fast pre-commit check, not the final one. For Claude
+  Code the hooks in `.claude/settings.json` do this for you: after each edit
+  they name the other side, and they send you back while a seam disagrees.
+- When you add a component, a connection, or a value two places must share,
+  put it on the map in the same change: a block, a link with anchors and
+  `contract.enforcement`, and a guard that reads both sides for every
+  hand-written seam (`crossweft discover` suggests guards; `crossweft import`
+  derives them when one side is an OpenAPI or .proto schema). The
+  `crossweft` skill has the full procedure, including mapping a repository
+  from scratch.
+- Never weaken a guard, widen a regex, add an `allow` entry or a finding, run
+  `crossweft baseline` (it is for adoption only), or attest a pair with
+  `--other-side-unchanged` without re-reading every region, just to make the
+  check pass; each needs a concrete reason.
 ```
 
 ## CI
@@ -166,7 +236,7 @@ GitHub Action (annotates the diff):
 
 ```yaml
 - uses: actions/checkout@v4
-- uses: happyin-app/crossweft@v0.1.0
+- uses: happyin-app/crossweft@v0.2.0
 ```
 
 pre-commit:
@@ -174,7 +244,7 @@ pre-commit:
 ```yaml
 repos:
   - repo: https://github.com/happyin-app/crossweft
-    rev: v0.1.0
+    rev: v0.2.0
     hooks:
       - id: crossweft-check
 ```
@@ -182,4 +252,57 @@ repos:
 Anything else: `crossweft check --format github`, `--format json`,
 `--format sarif` (SARIF 2.1.0, for code-scanning uploads), or the plain text
 output; exit 0 = consistent, 1 = problems, 2 = the model or config
-could not be read.
+could not be read. A machine format always prints exactly one document on
+stdout: an unreadable `crossweft.json` gives the normal json shape with
+`"ok": false` and `"error"` set, or a failed SARIF run, still exit 2. Every
+SARIF result carries `partialFingerprints` (`crossweftKey/v1`: the finding key,
+or the rule plus the normalised error text), so an upload through the API
+updates an alert instead of duplicating it. A refused flag combination
+(`--changed` with `--format sarif`) is a usage error: the message goes to
+stderr and stdout stays empty, so the upload fails rather than reading as
+"no alerts".
+
+### Large repositories: `check --changed`
+
+`crossweft check --changed REV` runs only the guards (anchors, joins, sets,
+pairs, the route scan, joint kinds) that read a path in the change set: every
+file that differs between REV and the working tree (committed, staged or
+not), every untracked file, and every git-ignored file or directory (git cannot
+say whether an ignored file changed, so its guards always run). The
+model-wide checks -- seams, status, provenance, evidence, coverage,
+requirements, harness, generated docs, the lock's stale entries -- run in full.
+Exit codes are those of `check`.
+
+It is never mistaken for a full check: the last line reads
+`SCANNED: ... (changed-only: N of M guards)`, `--format json` carries a
+`changed_only` object, and `--format sarif` is refused (code scanning would
+close the alerts of every skipped guard). It falls back to the full check, and
+says why, when the change set cannot be trusted: REV does not resolve, git
+fails, or `crossweft.json`, a model file, the pair lock or a joint plugin is in
+it (a changed map can move any guard onto any file). A recorded finding whose
+guard was skipped is listed as "not re-checked" -- neither excused nor stale.
+
+The route scan is two guards. When any router file (or a `router_search` /
+`ignore_routers` path) changed, every router is rescanned: a route dropped from
+one router is `unserved` only if no other router still registers it. Client
+literals are judged against the links' declared routes alone, so only the
+changed client files are read; a router that stops serving a route an
+unchanged client still calls is reported as `route:unserved`. On a synthetic
+40-service repository (922 files, 1,000 routes, 800 client files; one run each
+on a loaded Windows machine, so read the ratios, not the seconds): full check
+289 s -> 182 s; `--changed` on a worker file 14 s -> 24 s (noise: the route
+scan does not run); on a client file 96 s -> 23 s; on a router file
+316 s -> 28 s.
+
+What it does not see: drift committed before REV in files that did not change
+since. That is why the pre-commit hook may use `--changed HEAD` (every earlier
+commit passed it) but CI and releases run the full check, and why the agent
+**stop hook keeps the full check**: an agent may commit during the session and
+must not finish with a seam out of agreement anywhere. For a branch in CI,
+`crossweft check --changed "$(git merge-base origin/main HEAD)"` is the narrow
+form; the full check stays the release gate.
+
+```yaml
+      - id: crossweft-check
+        args: [--changed, HEAD]   # pre-commit appends args to `crossweft check`
+```

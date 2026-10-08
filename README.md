@@ -1,6 +1,10 @@
 # Crossweft
 
-**Every hand-written seam needs a guard.**
+Crossweft fails your build when a value copied between languages -- an API
+version, a DTO field, an env var -- changes on one side only, and tells your
+coding agent which file on the other side to fix.
+
+*Every hand-written seam needs a guard.*
 
 A product written in more than one language is held together by seams: the
 route the client calls and the server registers, a header, a protocol version,
@@ -23,6 +27,21 @@ which file in another component must change with it.
   on the other side to re-read** -- and reports drift through hooks and a
   failing CLI/CI check. Hooks request repair; their retry limits and host
   boundaries are documented in [Agent integration](docs/agents.md).
+
+## Words used below
+
+| Word | Meaning |
+|---|---|
+| **seam** | a place where two components must agree on something written by hand on both sides: a route, a header, a version string, DTO fields, env vars, a duplicated algorithm |
+| **block** | one component on the map (a service, a client, a worker, a config file) and the code directories it owns |
+| **link** | a declared connection between two blocks; it carries one seam or a group of them |
+| **enforcement** | a link's answer to "what keeps both sides equal?" -- a shared symbol, a generator, or nobody (`duplicated`, `convention`, `none`) |
+| **guard** | a check that reads both sides of a link and fails when they disagree; required when nobody keeps them equal. Three kinds follow |
+| **join** | guard: a value extracted by regex from each file must be identical |
+| **set** | guard: the members extracted from each side (fields, enum values, env vars) must match |
+| **pair** | guard: two marked regions of duplicated logic; changing one fails until someone re-reads the other and runs `crossweft attest` |
+| **anchor** | `{"path": ..., "find": ...}`: a literal that must exist in a file, so the map cannot claim code that is not there |
+| **finding** | known drift recorded in the model with an owner and a next step; it excuses exactly the problems it names until they are fixed |
 
 ## What your agent sees
 
@@ -66,7 +85,7 @@ fails again.
 ## Install
 
 ```bash
-python -m pip install "git+https://github.com/happyin-app/crossweft.git@v0.1.0"
+python -m pip install "git+https://github.com/happyin-app/crossweft.git@v0.2.0"
 ```
 
 Requires Python 3.9+ and Git. This release is distributed from GitHub; the
@@ -97,10 +116,43 @@ automatic hooks are currently provided for Claude Code. See
 Or vendor it: copy the `crossweft/` directory into your repository and run
 `python -m crossweft`. No dependencies.
 
+## Quick start
+
+In an empty directory (a Git repository is not required for this step):
+
+```bash
+crossweft init --example
+crossweft check         # RESULT: PASS
+```
+
+`--example` writes a Python constant and a TypeScript constant that must agree
+(`crossweft-example/`), plus the two blocks, the link and the join that guard
+them (`seams/model/20-example.json`), next to `crossweft.json`, an empty model
+and the agent harness. It refuses to run if `crossweft-example/` already exists.
+
+**Break it.** Change the date in `API_VERSION` in
+`crossweft-example/api/version.py` only, and run `crossweft check` again:
+
+```
+[FAIL] joins: 1
+   - join:example-api-version disagrees: example-web@crossweft-example/web/version.ts:2='2026-10-01'; example-api@crossweft-example/api/version.py:2='2026-10-02'
+RESULT: FAIL (new=1 known=0 stale_findings=0)
+```
+
+It exits 1. `crossweft impact crossweft-example/api/version.py` names the file
+on the other side (`crossweft-example/web/version.ts`) and the guard.
+
+**Fix it.** Put the same value in both files; `crossweft check` passes again.
+
+**Map your repository.** Run `crossweft init` in your repository (without
+`--example`) and continue with [Adopting it](#adopting-it): your coding agent
+writes the map, `crossweft check` keeps it honest. Then add the check to CI
+(below). Every command and flag: [docs/cli.md](docs/cli.md).
+
 ## Five minutes on the demo
 
 ```bash
-git clone --branch v0.1.0 --depth 1 https://github.com/happyin-app/crossweft
+git clone --branch v0.2.0 --depth 1 https://github.com/happyin-app/crossweft
 cd crossweft
 python -m pip install -e .
 cd examples/polyglot-shop && crossweft check
@@ -178,6 +230,11 @@ Full reference: [docs/model-reference.md](docs/model-reference.md).
 crossweft init          # crossweft.json, an empty model, and the agent harness
 ```
 
+(If you tried `crossweft init --example` here, delete `crossweft-example/` and
+`seams/model/20-example.json` before mapping your own code.) If
+`crossweft discover` finds nothing to suggest in your repository, it prints the
+example's shape with placeholders to fill in.
+
 Then ask your coding agent to map the repository. The map is written by agents,
 not by hand: the `crossweft` skill that `init` installs walks the agent through
 it (blocks, links with anchors on both ends, honest enforcement, a guard for
@@ -191,6 +248,9 @@ every hand-written seam), and `crossweft check` drives the work:
   (routes, headers, API versions, URLs, event names, env vars), each with a
   guard whose regexes were already tried against the files. Review the suggested
   scope before adding a guard; discovery does not prove semantic equivalence.
+- `crossweft import openapi|proto <schema> --against <file>` does the same when
+  one side of a seam is an OpenAPI (JSON) or .proto schema and the other is
+  hand-written: fields, enum values, version and paths, each guard already tried.
 
 A person reviews what only a person can: whether each link's enforcement is
 honest, and the open findings.
@@ -212,10 +272,17 @@ missing. Details: [docs/agents.md](docs/agents.md).
 
 Then put it where the rest of the work happens:
 
-- **CI**: `uses: happyin-app/crossweft@v0.1.0` (annotates the diff), the
+- **CI**: `uses: happyin-app/crossweft@v0.2.0` (annotates the diff), the
   `crossweft-check` pre-commit hook, or `crossweft check --format github|json|sarif`
   (SARIF 2.1.0 for GitHub code scanning; recorded findings arrive as suppressed
-  results).
+  results). In a large repository, `crossweft check --changed HEAD` (pre-commit)
+  runs only the guards that read a changed file -- see [docs/agents.md](docs/agents.md#large-repositories-check---changed).
+- **Agents over MCP**: `crossweft mcp` serves `check`, `impact`, `show`, `discover`
+  and `other_side` as read-only tools -- see [docs/agents.md](docs/agents.md#mcp-any-mcp-client).
+- **Exit codes** (`check`, and the action and pre-commit hook built on it):
+  0 = consistent, 1 = problems, 2 = no verdict (the config or model could not
+  be read or validated, or nothing was scanned) -- treat 2 as a failure, never
+  as a pass.
 - **Rules that are not A-equals-B** ("this constant has one source"): small
   validators run by `crossweft validators`, which fails any validator that
   scanned nothing, lacks a real self-test, or reports a finding -- see
@@ -239,7 +306,10 @@ hand-written seam must declare itself and carry a guard, is what crossweft adds.
 | [ArchUnit](https://github.com/TNG/ArchUnit), [dependency-cruiser](https://github.com/sverweij/dependency-cruiser), [import-linter](https://github.com/seddonym/import-linter) | architecture rules inside one language | crossweft works across languages, processes and config files |
 | [Structurizr](https://github.com/structurizr/structurizr), [LikeC4](https://github.com/likec4/likec4), [Backstage](https://backstage.io/docs/features/software-catalog/well-known-relations) | architecture models and software catalogs | Crossweft focuses on explicit source anchors and guards on declared connections |
 | [fiberplane/drift](https://github.com/fiberplane/drift), Swimm | docs anchored to code | a hash fails on any edit; an anchor fails only when the claimed fact disappears |
-| [codegraph](https://github.com/colbymchenry/codegraph), [GitNexus](https://github.com/abhigyanpatwari/GitNexus) | code graphs and change impact for agents | call graphs, not contracts; crossweft is complementary |
+| [codegraph](https://github.com/colbymchenry/codegraph) | code graph and change impact for agents | call graphs, not contracts; crossweft is complementary |
+| [GitNexus](https://github.com/abhigyanpatwari/GitNexus) | code knowledge graph and change impact for agents (MCP); repository groups extract API contracts into a registry and match them across repositories, and `shape_check` compares response shapes with consumers' property accesses | contracts are inferred from the code graph; crossweft guards declared seams of any kind (env vars, headers, constants, duplicated logic) and fails the check when two sides disagree; the two combine |
+| [archagent](https://github.com/BenedatLLC/archagent) | architecture invariants written in Markdown, compiled into import-linter, dependency-cruiser and ast-grep configs; an LLM only proposes | dependency and structure rules inside Python and JS/TS; crossweft compares values and members across languages |
+| [Erode](https://github.com/erode-app/erode) | compares PR or local diffs with a LikeC4 or Structurizr model, using an LLM, to surface undeclared dependencies and structural changes | an LLM reviews dependencies against a model; crossweft's guards are deterministic and compare the values both sides hold |
 
 ## Limitations
 
@@ -250,14 +320,23 @@ hand-written seam must declare itself and carry a guard, is what crossweft adds.
 - Agents write the model and the check keeps it honest, but whether a link's
   enforcement is really `shared-code` or just two copies is still a judgment a
   person should review.
-- Route scanning understands Go chi natively; other routers need a regex.
+- Route scanning understands Go chi, Express/Fastify, FastAPI, Flask, gin and echo
+  natively, reading one file at a time: a prefix computed at runtime or a router
+  handed in from another file is reported (or declared in `receivers`), not
+  followed. Other routers need a regex.
+- `crossweft import` reads OpenAPI 3.x as JSON only (the standard library has
+  no YAML parser) and `.proto` files; it prints guards for you to review and
+  never writes the model.
+- `check --changed REV` cannot see drift committed before REV in files that
+  did not change since; CI, releases and the agent's stop hook run the full
+  check.
 - Claude Code has command hooks and a skill. Codex has a skill plugin that runs
   checks explicitly; it does not install automatic hooks. Other agent adapters
   are experimental and tested for output shape, not end to end.
 
 ## Status
 
-`0.1.0`, alpha. The engine grew inside a commercial product that spans several
+`0.2.0`, alpha. The engine grew inside a commercial product that spans several
 languages and processes, where one-sided changes kept reaching installs; this
 is its extraction. Built by [HappyIn](https://happyin.ai).
 

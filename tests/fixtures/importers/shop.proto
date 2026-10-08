@@ -1,0 +1,41 @@
+// Orders, as the gRPC gateway sees them.
+syntax = "proto3";
+
+package shop.v1;
+
+import "google/protobuf/timestamp.proto";
+
+/* The order a client reads back.
+   message Ghost { string not_a_field = 1; } */
+message Order {
+  string id = 1;
+  repeated string items = 2;
+  int64 total_cents = 3 [json_name = "totalCents"];
+  Status status = 4;
+  map<string, string> labels = 5;
+  oneof payment {
+    string card_token = 6;
+    string invoice_id = 7;
+  }
+  reserved 8, 9;
+  reserved "legacy_note";
+
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    PENDING = 1;
+    PAID = 2;
+    SHIPPED = 3;
+  }
+}
+
+enum Currency {
+  option allow_alias = true;
+  EUR = 0;
+  USD = 1; // US dollar
+}
+
+service Orders {
+  rpc Get (Order) returns (Order) {
+    option (google.api.http) = { get: "/v1/orders/{id}" };
+  }
+}

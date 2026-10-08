@@ -8,16 +8,23 @@ verifies the map against the code. Agents write and maintain the map, and
 the check makes sure it cannot drift from the code.
 
 - Before editing a file another component depends on, run
-  `crossweft impact <path>`: it names the file on the other side and the guard
-  that compares them. Change both sides.
-- Before you finish, `crossweft check` must print `RESULT: PASS`. For Claude
+  `crossweft impact <path>` (or the `impact` tool of `crossweft mcp`): it names
+  the file on the other side and the guard that compares them. Change both
+  sides.
+- Before you finish, `crossweft check` must print `RESULT: PASS` (exit 0;
+  1 = problems, 2 = no verdict, which is never a pass). `crossweft check
+  --changed HEAD` is a fast pre-commit check, not the final one. For Claude
   Code the hooks in `.claude/settings.json` do this for you: after each edit
   they name the other side, and they send you back while a seam disagrees.
 - When you add a component, a connection, or a value two places must share,
   put it on the map in the same change: a block, a link with anchors and
   `contract.enforcement`, and a guard that reads both sides for every
-  hand-written seam (`crossweft discover` suggests guards). The `crossweft`
-  skill has the full procedure, including mapping a repository from scratch.
-- Never weaken a guard, widen a regex, or add an `allow` entry or a finding
-  just to make the check pass; each needs a concrete reason.
+  hand-written seam (`crossweft discover` suggests guards; `crossweft import`
+  derives them when one side is an OpenAPI or .proto schema). The
+  `crossweft` skill has the full procedure, including mapping a repository
+  from scratch.
+- Never weaken a guard, widen a regex, add an `allow` entry or a finding, run
+  `crossweft baseline` (it is for adoption only), or attest a pair with
+  `--other-side-unchanged` without re-reading every region, just to make the
+  check pass; each needs a concrete reason.
 <!-- crossweft-agents:end -->

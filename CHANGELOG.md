@@ -1,5 +1,74 @@
 # Changelog
 
+## 0.2.0 (2026-10-08)
+
+- `crossweft impact` on files that are on no block says so and how to map them,
+  instead of the generic "fix the other sides" advice; without paths outside a
+  git work tree it exits 2 with one sentence instead of git's `--no-index` usage.
+- `check --format sarif`: the `crossweft/model` and `crossweft/render` results
+  now carry `partialFingerprints` too (rule plus normalised error text; one
+  key for stale generated docs), so API uploads do not duplicate alerts.
+  `check --format json` (or `--json`) with an unreadable `crossweft.json`
+  prints the normal json document with `"ok": false` and exit 2 instead of
+  plain text; `--changed` with `--format sarif` is still refused, now on
+  stderr with an empty stdout.
+- Every subcommand's `--help` now has a description and an example, and every
+  flag a help line. New [docs/cli.md](docs/cli.md) documents every command and
+  flag; this repository's own check fails when a command or flag is missing
+  from the docs or documented without existing.
+- The AGENTS.md block and the `crossweft` skill now cover the exit codes
+  (2 is never a pass), `check --changed` as a pre-commit check only, the MCP
+  tools, `import`, `baseline` as adoption-only, and what
+  `attest --other-side-unchanged` claims. After upgrading, `crossweft check`
+  reports the harness as out of date until you re-run `crossweft agents`.
+- README: a quick start (init --example, break, fix, map, CI), the exit codes,
+  and archagent, GitNexus contracts and Erode in the comparison.
+- A join point's `side` must be non-empty, and a `side` that is a block id must
+  name a block that holds the point's file (it, a part of it or a block
+  containing it); otherwise a schema error names the owning block(s). Free
+  labels stay valid -- `side` never decided which end a file is on.
+- `check --changed` no longer rescans every route file when one changed: a
+  changed client file reads only the changed client files, a changed router
+  rescans the routers (every one, so `route:unserved` stays exact) and no
+  client file. Path containment checks list each directory once instead of
+  resolving every file. Synthetic 40-service repo: `--changed` on a client
+  file 96 s -> 23 s, on a router 316 s -> 28 s, full check 289 s -> 182 s.
+- `crossweft mcp`: a read-only MCP server on stdio (stdlib only) with the tools
+  `check`, `impact`, `show`, `discover` and `other_side`; a call without a verdict
+  is an `isError` result, a bad argument a JSON-RPC error.
+- README opens with a plain one-sentence description and a glossary of the ten
+  terms the rest of it uses.
+- `crossweft init --example`: also writes a tiny working seam (a Python and a
+  TypeScript constant, two blocks, a link, a join) so `crossweft check` passes
+  at once, and fails naming the other file when one value changes. Refuses if
+  `crossweft-example/` already exists; nothing is written then.
+- `crossweft discover` with nothing to suggest prints a ready-to-edit
+  blocks + link + join snippet instead of asking to confirm candidates.
+- The model `init` writes points at the field reference by https URL instead of
+  a `docs/` path that does not exist in your repository.
+- A join point whose regex matches nothing is reported under `joins` (it was
+  `anchors`) and shows the regex as written, not JSON-escaped. Its key is
+  unchanged (`anchor:join:<id>:<path>`), so findings that name it still apply.
+- A current link missing `from_anchors`/`to_anchors` now shows the expected
+  shape, e.g. `"from_anchors": [{"path": "<file>", "find": "<text in that file>"}]`.
+- `crossweft import openapi|proto <schema> --against <file> [--link <id>]`: prints
+  ready-to-paste `sets`/`joins` for a seam whose one side is an OpenAPI 3.x (JSON
+  only) or .proto schema; every regex is tried on both files first, and a side
+  that matched nothing is marked and left out. Exit 0 / 1 (nothing matched) / 2
+  (schema unreadable).
+- Native route scanners `express` (with Fastify), `fastapi`, `flask`, `gin` and
+  `echo`: groups, mounted/included routers and blueprints with literal prefixes
+  are followed in the file; parameters are reported as `{name}`; a non-literal
+  path, method or prefix, or a router handed in from elsewhere, is
+  `route:unscannable:...` (or declared in the new `receivers`); a native router
+  file with nothing scanned is `route:scan-empty:<file>`; `router_search` now
+  reports unscanned routers of every supported kind, not only chi.
+- `check --changed REV`: runs only the guards that read a file changed since
+  REV (plus untracked and git-ignored files) and says so
+  (`SCANNED ... (changed-only: N of M guards)`); a changed map, lock, config or
+  joint plugin, or an unreadable change set, runs the full check instead. A
+  finding whose guard was skipped is reported as not re-checked, never stale.
+
 ## 0.1.0 -- first public release
 
 - License: Apache-2.0.

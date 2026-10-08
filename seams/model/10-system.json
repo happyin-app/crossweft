@@ -353,9 +353,9 @@
     },
     {
       "id": "documented-commands",
-      "name": "Commands the docs mention exist",
+      "name": "Every command is documented, and every documented command exists",
       "link": "docs-cli",
-      "mode": "left-subset",
+      "mode": "equal",
       "left": {
         "label": "README and docs",
         "paths": [
@@ -372,6 +372,26 @@
           "crossweft/cli.py"
         ],
         "regex": "sub\\.add_parser\\(\"([a-z-]+)\""
+      }
+    },
+    {
+      "id": "documented-flags",
+      "name": "Every CLI flag is in the command reference, and every flag there exists",
+      "link": "docs-cli",
+      "mode": "equal",
+      "left": {
+        "label": "docs/cli.md",
+        "paths": [
+          "docs/cli.md"
+        ],
+        "regex": "`(--[a-z][a-z-]*)"
+      },
+      "right": {
+        "label": "CLI parser",
+        "paths": [
+          "crossweft/cli.py"
+        ],
+        "regex": "add_argument\\(\"(--[a-z][a-z-]*)\""
       }
     }
   ],

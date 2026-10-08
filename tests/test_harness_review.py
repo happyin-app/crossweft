@@ -425,9 +425,9 @@ class AgentsPreservesAndIsIdempotent(DemoCase):
 
     def test_a_read_only_file_is_an_error_without_leftovers(self) -> None:
         path = self.root / "AGENTS.md"
-        path.write_text(path.read_text(encoding="utf-8").replace("Change both sides.",
-                                                                 "Change one side."),
-                        encoding="utf-8")
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("Never weaken a guard", text, "test setup: the block must change")
+        path.write_text(text.replace("Never weaken a guard", "Weaken a guard"), encoding="utf-8")
         before = path.read_bytes()
         path.chmod(0o444)
         try:

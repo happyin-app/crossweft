@@ -67,6 +67,7 @@ import html
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -128,7 +129,7 @@ IDENTIFIER_KINDS = {"route", "pipe", "env", "file", "registry", "scm", "header",
 # paths) can be compared with a list of bare file names.
 TRANSFORMS = {"unescape-c", "lower", "strip", "csv-words", "basename"}
 ROUTE_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "ANY", "MOUNT")
-ROUTE_SCANNERS = {"go-chi", "regex"}
+ROUTE_SCANNERS = {"go-chi", "regex", "express", "fastapi", "flask", "gin", "echo"}
 AGENT_STOP_MODES = ("block", "warn")
 
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$")
@@ -208,6 +209,747 @@ def _go_literal(expr: str) -> str | None:
     if not match:
         return None
     return match.group(1) if match.group(1) is not None else match.group(2)
+
+
+
+# --------------------------------------------------------------------------- #
+# Native route scanners beyond go-chi: express, fastapi, flask, gin, echo.
+# Each reads one file lexically (comments and strings are skipped), follows the
+# router objects the file creates -- groups, mounted routers, included routers,
+# blueprints -- and reports every registration it cannot resolve statically.
+# --------------------------------------------------------------------------- #
+
+NATIVE_LANG = {"express": "js", "fastapi": "py", "flask": "py", "gin": "go", "echo": "go"}
+_HTTP = ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS")
+# registration name -> HTTP method; other names a scanner handles are in NATIVE_SPECIAL
+NATIVE_VERBS = {
+    "express": {**{v.lower(): v for v in _HTTP}, "all": "ANY"},
+    "fastapi": {**{v.lower(): v for v in _HTTP}, "trace": "TRACE", "websocket": "GET"},
+    "flask": {v.lower(): v for v in _HTTP[:5]},
+    "gin": {**{v: v for v in _HTTP}, "Any": "ANY", "StaticFile": "GET", "StaticFileFS": "GET"},
+    "echo": {**{v: v for v in _HTTP}, "CONNECT": "CONNECT", "TRACE": "TRACE", "Any": "ANY",
+             "File": "GET"},
+}
+NATIVE_SPECIAL = {
+    "express": {"route", "use", "register"},
+    "fastapi": {"api_route", "add_api_route", "include_router", "mount"},
+    "flask": {"route", "add_url_rule", "register_blueprint"},
+    "gin": {"Handle", "Match", "Group", "Static", "StaticFS"},
+    "echo": {"Add", "Match", "Group", "Static"},
+}
+# constructor call chains (see _NativeRoutes.signature) -> keyword holding the
+# router's own prefix ("" = none)
+NATIVE_ROOTS = {
+    "express": {"express()": "", "express.Router()": "", "Router()": "", "fastify()": "",
+                "Fastify()": ""},
+    "fastapi": {"FastAPI()": "", "fastapi.FastAPI()": "", "APIRouter()": "prefix",
+                "fastapi.APIRouter()": "prefix"},
+    "flask": {"Flask()": "", "flask.Flask()": "", "Blueprint()": "url_prefix",
+              "flask.Blueprint()": "url_prefix"},
+    "gin": {"gin.Default()": "", "gin.New()": ""},
+    "echo": {"echo.New()": ""},
+}
+# typed parameters and fields: the root type is a router at "", a group type is a
+# router whose prefix only the caller knows
+NATIVE_TYPED = {
+    "express": (re.compile(r"(?<=[(,])\s*([A-Za-z_$][\w$]*)\s*:\s*(?:express\s*\.\s*)?"
+                           r"(Express|Application|Router|FastifyInstance)\b"),
+                {"Express", "Application"}),
+    "fastapi": (re.compile(r"(?<=[(,])\s*([A-Za-z_]\w*)\s*:\s*(?:fastapi\s*\.\s*)?"
+                           r"(FastAPI|APIRouter)\b"), {"FastAPI"}),
+    "flask": (re.compile(r"(?<=[(,])\s*([A-Za-z_]\w*)\s*:\s*(?:flask\s*\.\s*)?"
+                         r"(Flask|Blueprint)\b"), {"Flask"}),
+    "gin": (re.compile(r"\b([A-Za-z_]\w*)\s+\*?gin\s*\.\s*(Engine|RouterGroup|IRouter|IRoutes)\b"),
+            {"Engine"}),
+    "echo": (re.compile(r"\b([A-Za-z_]\w*)\s+\*?echo\s*\.\s*(Echo|Group)\b"), {"Echo"}),
+}
+NATIVE_ASSIGN_RES = {
+    "go": re.compile(r"(?<![\w.])([A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)*)[ \t]*(?::=|=(?!=))[ \t]*"),
+    "js": re.compile(r"(?<![\w.$])(?:(?:const|let|var)\s+)?"
+                     r"([A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*)[ \t]*=(?![=>])[ \t]*"),
+    "py": re.compile(r"^[ \t]*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)[ \t]*(?::[^=\n]*)?=(?!=)[ \t]*",
+                     re.MULTILINE),
+}
+# a file that builds a router of each kind (router_search: scanned, ignored, or a problem)
+ROUTER_FILE_RES = {
+    "go-chi": GO_NEW_ROUTER_RE,
+    "express": re.compile(r"\bexpress\s*\(\s*\)|\bexpress\s*\.\s*Router\s*\(|\b[Ff]astify\s*\("
+                          r"|require\(\s*['\"]fastify['\"]\s*\)\s*\("),
+    "fastapi": re.compile(r"\b(?:FastAPI|APIRouter)\s*\("),
+    "flask": re.compile(r"\b(?:Flask|Blueprint)\s*\("),
+    "gin": re.compile(r"\bgin\s*\.\s*(?:Default|New)\s*\(\s*\)"),
+    "echo": re.compile(r"\becho\s*\.\s*New\s*\(\s*\)"),
+}
+_IDENT_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$")
+_PY_STR_RE = re.compile(r"([rRuUbBfF]{0,2})('''|\"\"\"|'|\")(.*)\2", re.DOTALL)
+_JS_STR_RE = re.compile(r"'((?:[^'\\\n]|\\.)*)'|\"((?:[^\"\\\n]|\\.)*)\"|`((?:[^`\\]|\\.)*)`",
+                        re.DOTALL)
+
+
+def _lex_spans(text: str, lang: str) -> list[tuple[int, int]]:
+    """Half-open spans of the comments and string literals of a JavaScript /
+    TypeScript ("js") or Python ("py") file. JavaScript regex literals are not
+    recognised (a quote inside one would open a string)."""
+    spans: list[tuple[int, int]] = []
+    i, n = 0, len(text)
+    while i < n:
+        ch, start = text[i], i
+        if lang == "js" and text.startswith("//", i) or lang == "py" and ch == "#":
+            end = text.find("\n", i)
+            i = n if end < 0 else end
+        elif lang == "js" and text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            i = n if end < 0 else end + 2
+        elif lang == "py" and text.startswith(("'''", '"""'), i):
+            end = text.find(text[i:i + 3], i + 3)
+            while end > 0 and text[end - 1] == "\\":
+                end = text.find(text[i:i + 3], end + 1)
+            i = n if end < 0 else end + 3
+        elif ch in "\"'" or lang == "js" and ch == "`":
+            i += 1
+            while i < n and text[i] != ch and (ch == "`" or text[i] != "\n"):
+                i += 2 if text[i] == "\\" else 1
+            i += 1
+        else:
+            i += 1
+            continue
+        spans.append((start, min(i, n)))
+    return spans
+
+
+def _native_path(path: str) -> str:
+    """Route parameters in the `{name}` form the go-chi scanner reports:
+    `:id`, `:id?`, `:id(\\d+)` (Express, gin, echo), `<int:id>` (Flask) and
+    `{id:path}` (FastAPI) all become `{id}`."""
+    path = re.sub(r"<(?:[^<>:]+:)?([^<>]+)>", r"{\1}", path)
+    path = re.sub(r"\{([^{}:]+):[^{}]*\}", r"{\1}", path)
+    return re.sub(r"(?<=/):([A-Za-z_]\w*)(?:\([^)]*\))?\??", r"{\1}", path)
+
+
+class _RouterObj:
+    """A router the scanned file creates (or receives): its own prefix, and the
+    routers it is mounted on. `why` says why its prefix cannot be known."""
+
+    __slots__ = ("name", "own", "mounts", "why", "reported")
+
+    def __init__(self, name: str, own: str = "", why: str | None = None) -> None:
+        self.name, self.own, self.why = name, own, why
+        self.mounts: list[tuple[_RouterObj, str]] = []
+        self.reported = False
+
+
+_IGNORED = object()   # a `receivers` entry mapped to null: not a router
+
+
+class _NativeRoutes:
+    """The registrations of one file for one native scanner.
+
+    Static reading only: a router's prefix must be a literal and the router
+    must be created (or mounted) in this file, or named in the router entry's
+    `receivers`. Everything else is a `route:unscannable:` problem -- or, for a
+    router mounted from another file without a prefix, an [INFO] line --
+    never a silently skipped route."""
+
+    def __init__(self, checker: "Checker", rel: str, text: str, scanner: str,
+                 receivers: dict[str, str | None]) -> None:
+        self.c, self.rel, self.text, self.scanner = checker, rel, text, scanner
+        self.lang = NATIVE_LANG[scanner]
+        if self.lang == "go":
+            self.spans = Checker.go_scan(text)[1]
+        else:
+            self.spans = _lex_spans(text, self.lang)
+        self.span_starts = [start for start, _ in self.spans]
+        self.span_end = dict(self.spans)
+        self.verbs = NATIVE_VERBS[scanner]
+        self.receivers = receivers
+        self.objects: dict[object, _RouterObj] = {}
+        self.pending: list[tuple[_RouterObj, list[str], str, int]] = []
+        self.bindings: dict[str, list[tuple[int, int, str]]] = {}
+        self.evaluating: set[int] = set()
+        self.values: dict[int, object] = {}
+        self.reported: set[str] = set()
+        self.problems = 0
+
+    # ------------------------------------------------------------ lexical
+    def in_code(self, pos: int) -> bool:
+        index = bisect.bisect_right(self.span_starts, pos) - 1
+        return index < 0 or pos >= self.spans[index][1]
+
+    def items(self, open_pos: int) -> tuple[list[tuple[str, int]], int]:
+        """The top-level comma-separated items after the bracket at `open_pos`
+        ((expression, start) pairs), and the index of the closing bracket."""
+        text, n = self.text, len(self.text)
+        found: list[tuple[str, int]] = []
+        depth, start, i = 0, open_pos + 1, open_pos + 1
+        while i < n:
+            if i in self.span_end:
+                i = self.span_end[i]
+                continue
+            ch = text[i]
+            if ch in "([{":
+                depth += 1
+            elif ch in ")]}":
+                if depth == 0:
+                    break
+                depth -= 1
+            elif ch == "," and depth == 0:
+                found.append((start, i))
+                start = i + 1
+            i += 1
+        found.append((start, i))
+        rows = []
+        for a, b in found:
+            expr = text[a:b]
+            if expr.strip():
+                rows.append((expr.strip(), a + len(expr) - len(expr.lstrip())))
+        return rows, i
+
+    def closing(self, open_pos: int) -> int:
+        return self.items(open_pos)[1]
+
+    def receiver(self, dot: int) -> tuple[str, int]:
+        """The receiver expression that ends at the '.' at `dot` (`app`,
+        `s.engine`, `router.route('/x').get(h)`) and where it starts."""
+        text, end, i = self.text, dot, dot
+        while True:
+            while i > 0 and text[i - 1].isspace():
+                i -= 1
+            if i > 0 and text[i - 1] in ")]":
+                depth, j = 0, i - 1
+                while j >= 0:
+                    if not self.in_code(j):
+                        index = bisect.bisect_right(self.span_starts, j) - 1
+                        j = self.spans[index][0] - 1
+                        continue
+                    if text[j] in ")]":
+                        depth += 1
+                    elif text[j] in "([":
+                        depth -= 1
+                        if depth == 0:
+                            break
+                    j -= 1
+                i = max(j, 0)
+            k = i
+            while k > 0 and text[k - 1] in _IDENT_CHARS:
+                k -= 1
+            if k == i:
+                break
+            i = k
+            j = i
+            while j > 0 and text[j - 1].isspace():
+                j -= 1
+            if j > 1 and text[j - 1] == "." and text[j - 2] != ".":
+                i = j - 1
+                continue
+            break
+        return text[i:end].strip(), i
+
+    def chain(self, start: int, end: int) -> list[tuple[str, int | None]] | None:
+        """`a.b(x).c` between start and end as [(name, open paren or None)], or
+        None when it is not such a chain (an operator, a literal, ...)."""
+        text, segs, i = self.text, [], start
+        ident = re.compile(r"\s*([A-Za-z_$][\w$]*)\s*")
+        while i < end:
+            match = ident.match(text, i, end)
+            if not match:
+                return None
+            i = match.end()
+            if i < end and text[i] == "(":
+                segs.append((match.group(1), i))
+                i = self.closing(i) + 1
+                while i < end and text[i] == "(":       # require('fastify')(...)
+                    segs.append(("", i))
+                    i = self.closing(i) + 1
+            else:
+                segs.append((match.group(1), None))
+            while i < end and text[i].isspace():
+                i += 1
+            if i < end and text[i] == "[":
+                return None
+            if i < end and text[i] == ".":
+                i += 1
+                continue
+            if i < end:
+                return None
+        return segs or None
+
+    # ----------------------------------------------------------- literals
+    def literal(self, expr: str) -> tuple[str | None, str]:
+        """(value, "") for a plain string literal, else (None, why not)."""
+        if self.lang == "go":
+            value = _go_literal(expr)
+            return (value, "") if value is not None else (None, "not a string literal")
+        if self.lang == "py":
+            match = _PY_STR_RE.fullmatch(expr)
+            if not match:
+                return None, "not a string literal"
+            if "f" in match.group(1).lower():
+                return None, "an f-string"
+            if "b" in match.group(1).lower():
+                return None, "a bytes literal"
+            body = match.group(3)
+            return (body if "r" in match.group(1).lower()
+                    else re.sub(r"\\(.)", r"\1", body)), ""
+        match = _JS_STR_RE.fullmatch(expr)
+        if not match:
+            return None, "not a string literal"
+        if match.group(3) is not None and "${" in match.group(3):
+            return None, "a template literal with ${...}"
+        body = next(g for g in match.groups() if g is not None)
+        return re.sub(r"\\(.)", r"\1", body), ""
+
+    def method_of(self, expr: str) -> str | None:
+        constant = GO_HTTP_METHOD_RE.fullmatch(expr) if self.lang == "go" else None
+        if constant:
+            return constant.group(1).upper()
+        value = self.literal(expr)[0]
+        return value.upper() if value and value.isalpha() else None
+
+    def methods(self, expr: str, start: int) -> list[str] | None:
+        """HTTP methods from a literal, a list/tuple/array of them, or a Go
+        `[]string{...}` composite; None when any element is not a literal."""
+        single = self.method_of(expr)
+        if single:
+            return [single]
+        offset = expr.find("{") if self.lang == "go" else 0
+        if offset < 0 or expr[offset] not in "[({":
+            return None
+        rows, _ = self.items(start + offset)
+        found = [self.method_of(item) for item, _ in rows]
+        return None if not found or None in found else found  # type: ignore[return-value]
+
+    def split_args(self, rows: list[tuple[str, int]]
+                   ) -> tuple[list[tuple[str, int]], dict[str, tuple[str, int]]]:
+        """Positional arguments and Python keyword arguments."""
+        positional, keywords = [], {}
+        for expr, start in rows:
+            match = re.match(r"([A-Za-z_]\w*)\s*=(?!=)\s*", expr) if self.lang == "py" else None
+            if match:
+                keywords[match.group(1)] = (expr[match.end():], start + match.end())
+            else:
+                positional.append((expr, start))
+        return positional, keywords
+
+    def object_props(self, expr: str, start: int) -> dict[str, tuple[str, int]]:
+        """`{method: 'GET', url: '/x'}` -> {name: (expression, start)}."""
+        if not expr.startswith("{"):
+            return {}
+        rows, _ = self.items(start)
+        props = {}
+        for item, at in rows:
+            match = re.match(r"['\"]?([A-Za-z_$][\w$]*)['\"]?\s*:\s*", item)
+            if match:
+                props[match.group(1)] = (item[match.end():], at + match.end())
+        return props
+
+    # ----------------------------------------------------------- problems
+    def unscannable(self, name: str, expr: str, pos: int, what: str) -> None:
+        expr = " ".join(expr.split())
+        key = f"route:unscannable:{self.rel}:{name} {expr}"
+        if key in self.reported:
+            return
+        self.reported.add(key)
+        self.problems += 1
+        line = self.c.line_at(self.rel, pos)
+        self.c.add(key, "routes",
+                   f"{self.rel}:{line}: {name}({expr}, ...) -- {what}, so the {self.scanner} "
+                   "scanner cannot tell which route this is; write it as a literal, name the "
+                   "receiver in the router's `receivers`, or record a finding with this key",
+                   path=self.rel, line=line)
+
+    def info(self, pos: int, message: str) -> None:
+        self.c.info.append(f"route scan {self.rel}:{self.c.line_at(self.rel, pos)}: {message}")
+
+    # ------------------------------------------------------------ binding
+    def collect_bindings(self) -> None:
+        """Every place a name is set: assignments (value read lazily) and
+        parameters or fields typed as a router."""
+        for match in NATIVE_ASSIGN_RES[self.lang].finditer(self.text):
+            if not self.in_code(match.start(1)):
+                continue
+            name = re.sub(r"\s+", "", match.group(1))
+            self.bindings.setdefault(name, []).append((match.start(1), match.end(), "assign"))
+        typed, roots = NATIVE_TYPED[self.scanner]
+        for match in typed.finditer(self.text):
+            if self.in_code(match.start(1)):
+                kind = "root" if match.group(2) in roots else "group:" + match.group(2)
+                self.bindings.setdefault(match.group(1), []).append(
+                    (match.start(1), match.start(1), kind))
+        for rows in self.bindings.values():
+            rows.sort()
+
+    def rhs_end(self, start: int) -> int:
+        """The end of the expression assigned at `start` (end of statement)."""
+        text, n, depth, i = self.text, len(self.text), 0, start
+        while i < n:
+            if i in self.span_end:
+                i = self.span_end[i]
+                continue
+            ch = text[i]
+            if ch in "([{":
+                depth += 1
+            elif ch in ")]}":
+                if depth == 0:
+                    break
+                depth -= 1
+            elif depth == 0 and ch in "\n;,":
+                break
+            i += 1
+        return i
+
+    def lookup(self, name: str, pos: int) -> object:
+        """The router (or route context) `name` holds at `pos`: the closest
+        earlier binding, else the first one (hoisted functions use names
+        bound further down); None when the name is not a router."""
+        if name in self.receivers:
+            prefix = self.receivers[name]
+            if prefix is None:
+                return _IGNORED
+            return (self.make(("recv", name), name, prefix), None)
+        rows = self.bindings.get(name)
+        if not rows:
+            return None
+        earlier = [row for row in rows if row[0] < pos]
+        at, value_start, kind = earlier[-1] if earlier else rows[0]
+        if kind == "root":
+            return (self.make(("typed", at), name, ""), None)
+        if kind.startswith("group:"):
+            obj = self.make(("typed", at), name, "",
+                            f"`{name}` is a parameter or field typed {kind[6:]}: its prefix is set "
+                            "by code this scanner does not follow")
+            return (obj, None)
+        if at in self.values:
+            return self.values[at]
+        if at in self.evaluating:
+            return None
+        self.evaluating.add(at)
+        end = self.rhs_end(value_start)
+        start = value_start
+        while True:
+            match = re.compile(r"\s*(?:await|new|&)\s*").match(self.text, start, end)
+            if not match or match.end() == start:
+                break
+            start = match.end()
+        value = self.evaluate(start, end, name)
+        self.evaluating.discard(at)
+        self.values[at] = value
+        return value
+
+    def make(self, key: object, name: str, own: str, why: str | None = None) -> _RouterObj:
+        if key not in self.objects:
+            self.objects[key] = _RouterObj(name, own, why)
+        return self.objects[key]
+
+    @staticmethod
+    def signature(segs: list[tuple[str, int | None]]) -> str:
+        """`express.Router()`, `require()()`: the names and calls of a chain."""
+        parts: list[str] = []
+        for name, open_ in segs:
+            if name:
+                parts.append(name + ("()" if open_ is not None else ""))
+            elif parts:
+                parts[-1] += "()"
+        return ".".join(parts)
+
+    def evaluate(self, start: int, end: int, name: str) -> object:
+        """The router a chain expression yields: (obj, route path or None),
+        _IGNORED, or None (not a router)."""
+        segs = self.chain(start, end)
+        if not segs:
+            return None
+        roots = NATIVE_ROOTS[self.scanner]
+        for cut in range(len(segs), 0, -1):
+            if segs[cut - 1][1] is None:
+                continue
+            sig = self.signature(segs[:cut])
+            fastify = (self.scanner == "express" and sig == "require()()" and re.match(
+                r"require\(\s*['\"]fastify['\"]", self.text[start:end].lstrip()))
+            if sig in roots or fastify:
+                keyword = roots.get(sig, "")
+                own, why = "", None
+                if keyword:
+                    _, kwargs = self.split_args(self.items(segs[cut - 1][1])[0])
+                    if keyword in kwargs:
+                        own, why_not = self.literal(kwargs[keyword][0])
+                        if own is None:
+                            why = f"its {keyword}= is {why_not}"
+                            self.unscannable(sig[:-2], f"{keyword}={kwargs[keyword][0]}",
+                                             kwargs[keyword][1], why)
+                            own = ""
+                obj = self.make(("new", segs[cut - 1][1]), name, own, why)
+                if why:
+                    obj.reported = True
+                return self.follow((obj, None), segs[cut:])
+        names = []
+        for seg_name, open_ in segs:
+            if open_ is not None:
+                break
+            names.append(seg_name)
+        if not names:
+            return None
+        dotted = ".".join(names)
+        candidates = [dotted]
+        if len(names) > 1 and (self.lang == "go" or names[0] in ("self", "this")):
+            candidates.append(names[-1])
+        value = None
+        for candidate in candidates:
+            if candidate in self.receivers or candidate in self.bindings:
+                value = self.lookup(candidate, start)
+                break
+        if value is None or value is _IGNORED:
+            return value
+        return self.follow(value, segs[len(names):])
+
+    def follow(self, value: object, segs: list[tuple[str, int | None]]) -> object:
+        """Apply the remaining calls of a chain: groups, `.route(path)`, and the
+        registrations that return their own receiver."""
+        for seg_name, open_ in segs:
+            if value is None or value is _IGNORED or open_ is None:
+                return None if open_ is None else value
+            obj, route_path = value  # type: ignore[misc]
+            if self.scanner in ("gin", "echo") and seg_name == "Group":
+                value = (self.group(obj, open_), None)
+            elif self.scanner == "express" and seg_name == "route" and route_path is None:
+                rows, _ = self.items(open_)
+                if not rows:
+                    return None
+                path, why = self.literal(rows[0][0])
+                if path is None:
+                    self.unscannable("route", rows[0][0], open_, f"the path is {why}")
+                    return _IGNORED
+                value = (obj, path)
+            elif route_path is not None and seg_name in self.verbs:
+                continue
+            else:
+                return None
+        return value
+
+    def group(self, parent: _RouterObj, open_: int) -> _RouterObj:
+        key = ("group", open_)
+        if key in self.objects:
+            return self.objects[key]
+        rows, _ = self.items(open_)
+        prefix, why = self.literal(rows[0][0]) if rows else (None, "missing")
+        obj = self.make(key, f"{parent.name}.Group({rows[0][0] if rows else ''})", "")
+        if prefix is None:
+            obj.why, obj.reported = f"the group prefix is {why}", True
+            self.unscannable("Group", rows[0][0] if rows else "", open_,
+                             f"the group prefix is {why}; the routes below it are not checked")
+        else:
+            obj.mounts.append((parent, prefix))
+        return obj
+
+    # --------------------------------------------------------------- scan
+    def run(self) -> list[tuple[str, str, int]]:
+        self.collect_bindings()
+        names = sorted(set(self.verbs) | NATIVE_SPECIAL[self.scanner], key=len, reverse=True)
+        call = re.compile(r"\.\s*(" + "|".join(names) + r")\s*\(")
+        for match in call.finditer(self.text):
+            if self.in_code(match.start()):
+                self.registration(match.group(1), match.start(), match.end() - 1)
+        return self.resolve()
+
+    def registration(self, verb: str, dot: int, open_: int) -> None:
+        rows, _ = self.items(open_)
+        fastify_route = verb == "route" and self.scanner == "express" and bool(rows) \
+            and rows[0][0].startswith("{")
+        if verb == "Group" or (verb == "route" and self.scanner == "express"
+                               and not fastify_route):
+            return       # a scope: read through the receivers that use it
+        recv_expr, recv_start = self.receiver(dot)
+        positional, kwargs = self.split_args(rows)
+        decorator = self.lang == "py" and self.text[:recv_start].rstrip().endswith("@")
+        value = self.evaluate(recv_start, dot, recv_expr) if recv_expr else None
+        if value is _IGNORED:
+            return
+        if value is None:
+            self.unknown_receiver(verb, recv_expr, dot, positional, decorator)
+            return
+        obj, route_path = value  # type: ignore[misc]
+        if verb in ("use", "include_router", "register_blueprint", "register", "mount",
+                    "Static", "StaticFS"):
+            self.mount(obj, verb, positional, kwargs, open_)
+            return
+        if fastify_route:                                 # fastify.route({method, url, ...})
+            props = self.object_props(*positional[0])
+            url, method = props.get("url") or props.get("path"), props.get("method")
+            if url is None or method is None:
+                self.unscannable(verb, positional[0][0][:60], dot,
+                                 "it has no `method` and `url` properties")
+                return
+            paths, methods = self.paths(verb, url), self.methods(*method)
+            if methods is None:
+                self.unscannable(verb, f"method: {method[0]}", dot, "the method is not a literal")
+                return
+        else:
+            method_expr = None
+            if verb in ("Handle", "Add", "Match"):
+                if len(positional) < 3:
+                    return
+                method_expr, positional = positional[0], positional[1:]
+            if route_path is not None:
+                paths = [route_path]
+            else:
+                path_arg = kwargs.get("path") or kwargs.get("rule") or (
+                    positional[0] if positional else None)
+                if path_arg is None or self.lang in ("js", "go") and len(positional) < 2:
+                    return      # app.get('env'): a settings getter, not a route
+                paths = self.paths(verb, path_arg)
+            if method_expr is not None:
+                methods = self.methods(*method_expr)
+                if methods is None:
+                    self.unscannable(verb, method_expr[0], dot, "the method is not a literal "
+                                     "(or an http.Method constant)")
+                    return
+            elif verb in ("api_route", "add_api_route", "route", "add_url_rule"):
+                methods = ["GET"]
+                if "methods" in kwargs:
+                    methods = self.methods(*kwargs["methods"])
+                    if methods is None:
+                        self.unscannable(verb, f"methods={kwargs['methods'][0]}", dot,
+                                         "the methods are not a list of literals")
+                        return
+            else:
+                methods = [self.verbs[verb]]
+        for path in paths or []:
+            self.pending.append((obj, methods, path, dot))
+
+    def paths(self, verb: str, arg: tuple[str, int]) -> list[str] | None:
+        expr, start = arg
+        exprs = [arg]
+        if self.lang == "js" and expr.startswith("["):
+            exprs = self.items(start)[0]
+        found = []
+        for item, _ in exprs:
+            path, why = self.literal(item)
+            if path is None:
+                self.unscannable(verb, expr, start, f"the path is {why}")
+                return None
+            if path == "*" and self.scanner == "express":
+                path = "/*"
+            if path and not path.startswith("/"):
+                self.unscannable(verb, expr, start, "the path does not start with '/'")
+                return None
+            found.append(path)
+        return found
+
+
+    def mount(self, obj: _RouterObj, verb: str, positional: list[tuple[str, int]],
+              kwargs: dict[str, tuple[str, int]], open_: int) -> None:
+        """A router (or app, static directory, plugin) mounted below a prefix:
+        a router this file creates is followed; anything else mounted below a
+        literal prefix is a MOUNT registration (covered by a declared route
+        below it); without a prefix it is an [INFO] line."""
+        if not positional:
+            return
+        prefix_arg: tuple[str, int] | None = None
+        children = positional[:1]
+        if verb in ("use", "mount", "Static", "StaticFS"):
+            first = positional[0]
+            values = [self.child(arg) for arg in positional]
+            if verb != "use" or self.literal(first[0])[0] is not None or any(
+                    isinstance(v, tuple) for v in values[1:]):
+                prefix_arg, children = first, positional[1:]
+            elif not isinstance(values[0], tuple):
+                return                                   # app.use(middleware, ...)
+        elif verb == "register":                         # fastify.register(plugin, {prefix})
+            options = self.object_props(*positional[1]) if len(positional) > 1 else {}
+            prefix_arg = options.get("prefix")
+        else:                                            # include_router / register_blueprint
+            prefix_arg = kwargs.get("prefix" if verb == "include_router" else "url_prefix")
+        prefix = None
+        if prefix_arg is not None:
+            prefix, why = self.literal(prefix_arg[0])
+            if prefix is None:
+                self.unscannable(verb, prefix_arg[0], prefix_arg[1],
+                                 f"the mount prefix is {why}; the routes below it are not checked")
+                return
+        routers = [(arg, self.child(arg)) for arg in children]
+        routers = [(arg, v) for arg, v in routers if isinstance(v, tuple)]
+        if routers and verb in ("use", "include_router", "register_blueprint"):
+            for _, (child, _) in routers:
+                if self.scanner == "fastapi":
+                    child.mounts.append((obj, (prefix or "") + child.own))
+                elif self.scanner == "flask":
+                    child.mounts.append((obj, child.own if prefix is None else prefix))
+                else:
+                    child.mounts.append((obj, prefix or ""))
+        elif prefix is not None:
+            self.pending.append((obj, ["MOUNT"], prefix, open_))
+        else:
+            self.info(open_, f"{verb}({children[0][0] if children else ''}) registers routes "
+                             "this scanner does not follow (another file or a plugin) without a "
+                             "prefix -- scan that file as its own router entry")
+
+    def child(self, arg: tuple[str, int]) -> object:
+        expr, start = arg
+        return self.evaluate(start, start + len(expr), expr)
+
+    def unknown_receiver(self, verb: str, expr: str, dot: int,
+                         positional: list[tuple[str, int]], decorator: bool) -> None:
+        """A registration-shaped call on a receiver this file neither creates
+        nor names in `receivers`: a route in a helper that is handed the router
+        (reported), or an HTTP client / map call (not route-shaped: ignored)."""
+        first = positional[0][0] if positional else ""
+        path_like = bool(re.match(r"[rRuU]?[\"'`]/", first))
+        if self.lang == "py":
+            shaped = decorator and (verb in self.verbs or verb in ("route", "api_route")) or \
+                verb in ("add_api_route", "add_url_rule", "include_router", "register_blueprint")
+        elif verb in ("Handle", "Add"):
+            shaped = len(positional) >= 3 and self.method_of(first) is not None
+        elif verb == "Match":
+            shaped = len(positional) >= 3 and first.startswith("[]string")
+        elif verb in ("Static", "StaticFS"):
+            shaped = len(positional) >= 2 and path_like
+        else:
+            shaped = verb in self.verbs and len(positional) >= 2 and path_like
+        if shaped and expr:
+            self.unscannable(f"{expr}.{verb}", first, dot,
+                             f"`{expr}` is not a router this file creates")
+
+    def prefixes(self, obj: _RouterObj, seen: frozenset = frozenset()) -> list[str]:
+        if obj.why or id(obj) in seen:
+            return []
+        if not obj.mounts:
+            return [obj.own]
+        found = []
+        for parent, local in obj.mounts:
+            for outer in self.prefixes(parent, seen | {id(obj)}):
+                found.append(_join_route(outer, local, self.scanner))
+        return found
+
+
+    def resolve(self) -> list[tuple[str, str, int]]:
+        routes = []
+        for obj, methods, path, pos in self.pending:
+            if obj.why:
+                if not obj.reported:     # a router handed in: report once, at its first route
+                    obj.reported = True
+                    self.problems += 1
+                    line = self.c.line_at(self.rel, pos)
+                    self.c.add(f"route:unscannable:{self.rel}:prefix {obj.name}", "routes",
+                               f"{self.rel}:{line}: routes registered on {obj.name} -- {obj.why}, "
+                               f"so the {self.scanner} scanner cannot tell their paths; name it "
+                               "in the router's `receivers` with its prefix, or record a finding "
+                               "with this key", path=self.rel, line=line)
+                continue
+            for prefix in self.prefixes(obj):
+                full = _native_path(_join_route(prefix, path, self.scanner) or "/")
+                for method in methods:
+                    routes.append((method, full, self.c.line_at(self.rel, pos)))
+        return routes
+
+
+def _join_route(prefix: str, path: str, scanner: str) -> str:
+    """A prefix and a route path as the framework joins them: no doubled '/',
+    and Express serves a router's "/" at the mount point itself."""
+    if not prefix:
+        return path
+    if not path:
+        return prefix
+    if scanner == "express" and path == "/":
+        return prefix
+    return prefix.rstrip("/") + path
 
 
 class ModelError(Exception):
@@ -964,7 +1706,8 @@ def _validate_route_scan(scan: object) -> list[str]:
         if not isinstance(router, dict):
             continue
         label = f"meta.route_scan.routers[{index}]"
-        extra = set(router) - {"path", "scanner", "function_prefixes", "pattern", "prefix", "note"}
+        extra = set(router) - {"path", "scanner", "function_prefixes", "pattern", "prefix", "note",
+                               "receivers"}
         if extra:
             errors.append(f"{label}: unknown key(s) {sorted(extra)}")
         problem = path_error(router.get("path"))
@@ -982,10 +1725,19 @@ def _validate_route_scan(scan: object) -> list[str]:
                 if "path" not in pattern.groupindex:
                     errors.append(f"{label}.pattern: needs a named group (?P<path>...) and may "
                                   "have (?P<method>...)")
-            if "function_prefixes" in router:
-                errors.append(f"{label}: function_prefixes only applies to the go-chi scanner")
         elif "pattern" in router:
             errors.append(f"{label}: pattern only applies to the regex scanner")
+        if "function_prefixes" in router and scanner != "go-chi":
+            errors.append(f"{label}: function_prefixes only applies to the go-chi scanner")
+        receivers = router.get("receivers", {})
+        if "receivers" in router and scanner not in NATIVE_LANG:
+            errors.append(f"{label}: receivers only applies to the "
+                          f"{'/'.join(sorted(NATIVE_LANG))} scanners")
+        if not isinstance(receivers, dict) or not all(
+                v is None or isinstance(v, str) and (v == "" or v.startswith("/"))
+                for v in receivers.values()):
+            errors.append(f"{label}.receivers: must map receiver names to a path prefix "
+                          "(\"\" or \"/...\") or null (not a router)")
         prefixes = router.get("function_prefixes", {})
         if not isinstance(prefixes, dict) or not all(isinstance(v, str) for v in prefixes.values()):
             errors.append(f"{label}.function_prefixes: must map function names to path prefixes")
@@ -1134,7 +1886,33 @@ def _validate_schema(model: Model) -> list[str]:
         for index, point in enumerate(points if isinstance(points, list) else []):
             if isinstance(point, dict) and "side" not in point:
                 errors.append(f"{model.where(join)}: join {join.get('id')} point {index} needs 'side'")
+            elif isinstance(point, dict):
+                errors += _join_side_errors(model, point, f"{model.where(join)}: join "
+                                            f"{join.get('id')} point {index}.side")
     return errors
+
+
+def _join_side_errors(model: Model, point: dict, label: str) -> list[str]:
+    """`side` is the label a point is reported under; which end of a link a
+    file is on is decided by its path (code, anchors), never by this label.
+    Free labels stay valid (measured 2026-10-07: 638 of 644 points in a real
+    261-join map are labels such as "server (Go)"). Only a label that IS a
+    block id makes a claim, and it is checked: the block must hold the file
+    (it, a part of it, or a block containing it owns the file's code)."""
+    side = point["side"]
+    if not isinstance(side, str):
+        return []   # the type error is reported with the other point fields
+    if not side.strip():
+        return [f"{label}: must be a non-empty string"]
+    path = point.get("path")
+    if side not in model.blocks or path_error(path):
+        return []
+    owners = code_owners(model, path)
+    if not owners or any(model.related(side, owner) for owner in owners):
+        return []
+    return [f"{label}: '{side}' is a block id, but {path} is code of {', '.join(owners)} -- "
+            f"name a block that holds the file ({', '.join(owners)}, a part of it or a block "
+            f"containing it), or a plain label that is not a block id"]
 
 
 # --------------------------------------------------------------------------- #
@@ -1349,9 +2127,50 @@ class Checker:
         self._text_cache: dict[str, str | None] = {}
         self._newlines: dict[str, list[int]] = {}
         self._listings: dict[Path, set[str]] = {}
+        self._link_names: dict[Path, frozenset[str] | None] = {}
         self._spelling_checked: set[str] = set()
         self.files_scanned: set[str] = set()
         self.items_checked = 0
+        # `check --changed`: the changed paths (None = the full check). A guard
+        # none of whose files is in scope is skipped, and the problem keys it
+        # could have raised are kept, so a finding it detects is never called
+        # stale for want of a run (see reconcile_findings).
+        self.scope: list[str] | None = None
+        self.guards_total = 0
+        self.guards_run = 0
+        self.skipped_keys: set[str] = set()
+        self.skipped_prefixes: list[str] = []
+        self.unverified: list[str] = []
+
+    # ------------------------------------------------------------- change scope
+    def in_scope(self, targets: list[str]) -> bool:
+        return self.scope is None or any(_scope_hit(changed, target)
+                                         for target in targets for changed in self.scope)
+
+    def guard(self, targets: list[str], keys: tuple[str, ...] = (),
+              prefixes: tuple[str, ...] = ()) -> bool:
+        """Count one guard; True when it must run. A skipped guard records the
+        exact keys and key prefixes of the problems it raises."""
+        self.guards_total += 1
+        if self.in_scope(targets):
+            self.guards_run += 1
+            return True
+        self.skipped_keys.update(keys)
+        self.skipped_prefixes.extend(prefixes)
+        return False
+
+    def evaluated(self, key: str) -> bool:
+        """Whether the detector of problem `key` ran in this check."""
+        if self.scope is None:
+            return True
+        if key in self.skipped_keys or key.startswith(tuple(self.skipped_prefixes)):
+            return False
+        kind, _, rel = key.partition(":")
+        if kind in ("escape", "path-case"):
+            # raised by whichever guard reads the file: only known when it was read
+            return rel in self._spelling_checked or rel in self._text_cache \
+                or self.in_scope([rel])
+        return True
 
     # ------------------------------------------------------------------ utils
     def text(self, rel: str) -> str | None:
@@ -1359,7 +2178,7 @@ class Checker:
         the repository (a symlink pointing out of the tree is refused, loud)."""
         if rel not in self._text_cache:
             path = self.root / rel
-            if path.exists() and not inside(self.root, path):
+            if path.exists() and not self.within(path):
                 self.add(f"escape:{rel}", "anchors",
                          f"{rel} resolves outside the repository (symlink?) -- refused", fatal=True)
                 self._text_cache[rel] = None
@@ -1371,6 +2190,49 @@ class Checker:
             except OSError:
                 self._text_cache[rel] = None
         return self._text_cache[rel]
+
+    def within(self, path: Path) -> bool:
+        """inside(self.root, path) without a resolve() per file. resolve() asks
+        the OS for the final path of every file (31 ms a call on a Windows
+        machine with on-access scanning: 138 s of a 230 s check on a 40-service
+        repo). A path below the root can only leave it through a symlink or
+        junction on the way, so each directory is listed once and its link
+        entries noted; a path that crosses one -- or that cannot be walked
+        plainly -- takes the full resolve() as before. Names are compared
+        casefolded: a case-insensitive file system may open `Link/a.ts` for a
+        link named `link`, so a case difference errs towards resolving."""
+        try:
+            parts = path.relative_to(self.root).parts
+        except ValueError:
+            return inside(self.root, path)
+        here = self.root
+        for part in parts:
+            if part in ("..", "."):
+                return inside(self.root, path)
+            if here not in self._link_names:
+                self._link_names[here] = self._links_in(here)
+            links = self._link_names[here]
+            if links is None or part.casefold() in links:
+                return inside(self.root, path)
+            here = here / part
+        return True
+
+    @staticmethod
+    def _links_in(directory: Path) -> frozenset[str] | None:
+        """Casefolded names of the symlinks and junctions in `directory` (None
+        when it cannot be listed). os.scandir reports both from the listing
+        itself: d_type on POSIX, the find data's reparse attribute on Windows."""
+        names = set()
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if entry.is_symlink() or (os.name == "nt" and getattr(
+                            entry.stat(follow_symlinks=False), "st_file_attributes", 0)
+                            & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+                        names.add(entry.name.casefold())
+        except OSError:
+            return None
+        return frozenset(names)
 
     def check_spelling(self, rel: str) -> None:
         """An EXISTING model path must be spelled as the file system names it. A
@@ -1434,7 +2296,7 @@ class Checker:
                 self.check_spelling(pattern)
             elif any(ch in pattern for ch in "*?["):
                 matches = {path.relative_to(self.root).as_posix() for path in self.root.glob(pattern)
-                           if path.is_file() and inside(self.root, path)}
+                           if path.is_file() and self.within(path)}
             else:
                 matches = set()
             kept = {f for f in matches if not any(fnmatch.fnmatch(f, ex) for ex in excluded)}
@@ -1445,8 +2307,10 @@ class Checker:
 
     # ---------------------------------------------------------------- anchors
     def check_anchor(self, anchor: dict, owner: str) -> None:
-        self.items_checked += 1
         rel = anchor.get("path", "")
+        if not self.guard([rel], keys=(f"anchor:{owner}:{rel}",)):
+            return
+        self.items_checked += 1
         path = self.root / rel
         if rel.endswith("/"):
             if not path.is_dir():
@@ -1473,6 +2337,8 @@ class Checker:
 
     def check_paths(self, paths: list[str], owner: str, what: str) -> None:
         for rel in paths:
+            if not self.guard([rel], keys=(f"path:{owner}:{rel}",)):
+                continue
             self.items_checked += 1
             if not (self.root / rel.rstrip("/")).exists():
                 self.add(f"path:{owner}:{rel}", "anchors", f"{owner}: {what} path missing: {rel}",
@@ -1531,6 +2397,9 @@ class Checker:
         must agree too -- comparing only the first match would let a second,
         drifted definition hide behind the first one."""
         for join in self.model.entities["joins"]:
+            if not self.guard([point["path"] for point in join["points"]],
+                              prefixes=(f"join:{join['id']}:", f"anchor:join:{join['id']}:")):
+                continue
             values: list[tuple[str, str, str, int]] = []   # (side@path, value, path, line)
             placed: list[tuple[str, str, str]] = []        # (path, regex, value) for the key
             broken = False
@@ -1545,8 +2414,11 @@ class Checker:
                     continue
                 matches = list(re.finditer(point["regex"], text, re.MULTILINE))
                 if not matches:
-                    self.add(f"anchor:join:{join['id']}:{rel}", "anchors",
-                             f"join:{join['id']}: regex not matched in {rel}: {point['regex']!r}",
+                    # reported under joins; the key keeps its "anchor:" prefix because
+                    # findings in users' repositories refer to it
+                    self.add(f"anchor:join:{join['id']}:{rel}", "joins",
+                             f"join:{join['id']}: the {point['side']} point's regex matched "
+                             f"nothing in {rel} -- regex: {point['regex']}",
                              fatal=True, path=rel)
                     broken = True
                     continue
@@ -1636,6 +2508,11 @@ class Checker:
     def check_sets(self) -> None:
         for entry in self.model.entities["sets"]:
             owner = f"set:{entry['id']}"
+            # exclude is ignored here: reading a set too often is safe, too rarely is not
+            targets = [t for key in ("left", "right")
+                       for t in entry[key].get("files") or entry[key].get("paths") or []]
+            if not self.guard(targets, prefixes=(f"{owner}:", f"anchor:{owner}:")):
+                continue
             left_at, _ = self._extract_set(entry["left"], owner)
             right_at, _ = self._extract_set(entry["right"], owner)
             left, right = set(left_at), set(right_at)
@@ -1701,6 +2578,12 @@ class Checker:
             return
         attested = lock["pairs"]
         for pair in pairs:
+            # the lock is never out of scope: a changed lock runs the full check
+            ident = pair["id"]
+            if not self.guard([region["path"] for region in pair["regions"]],
+                              keys=(f"pair:unattested:{ident}",),
+                              prefixes=(f"pair:changed:{ident}:", f"anchor:pair:{ident}:")):
+                continue
             hashes, lines, ok = self.pair_state(pair)
             if not ok:
                 continue
@@ -1924,6 +2807,26 @@ class Checker:
             routes.append((method, prefix + match.group("path"), self.line_at(rel, match.start())))
         return routes
 
+    def native_routes(self, rel: str, scanner: str, receivers: dict[str, str | None]
+                      ) -> list[tuple[str, str, int]]:
+        """(METHOD, full path, line) for one file read by a native scanner
+        (express, fastapi, flask, gin, echo; see _NativeRoutes). A file that
+        yields no route and reports nothing it could not read is an error:
+        zero scanned is never a pass."""
+        text = self.text(rel)
+        if text is None:
+            self.add(f"anchor:route-scan:{rel}", "anchors", f"route router file missing: {rel}",
+                     fatal=True, path=rel)
+            return []
+        scan = _NativeRoutes(self, rel, text, scanner, receivers)
+        routes = scan.run()
+        if not routes and not scan.problems:
+            self.add(f"route:scan-empty:{rel}", "routes",
+                     f"{rel}: the {scanner} scanner found no route registration -- wrong scanner, "
+                     "or the routes live in another file (scan that one); nothing here was checked",
+                     fatal=True, path=rel)
+        return routes
+
     @staticmethod
     def _norm_route_path(path: str) -> str:
         """Parameters in any common spelling -- {id}, :id, <int:id> -- compare equal."""
@@ -1949,6 +2852,39 @@ class Checker:
         # route nobody serves yet, and a legacy link must not "map" a live route
         current = [d for d in declared if d[2]["status"] == "current"]
         elsewhere = [d for d in declared if d[2]["status"] != "current"]
+        mapped = RouteIndex(current)
+        # Two guards, because the two halves read different files. Under
+        # `check --changed` the model is unchanged -- a changed model file, and
+        # with it meta.route_scan and every link's routes, makes change_scope
+        # fall back to the full check -- so each half depends only on its own
+        # files, and a half none of whose files changed gives today exactly the
+        # verdicts it gave at REV:
+        #  - the server half (unmapped, unserved, unscanned routers) compares ALL
+        #    registrations with the links, so it scans EVERY router as soon as
+        #    any router file (or a router_search / ignore_routers path) changed:
+        #    a route removed from a changed router is "unserved" unless an
+        #    unchanged router still registers it, which only a scan of that
+        #    router can tell;
+        #  - the client half judges each literal against the declared routes
+        #    alone (`mapped`), never against the registrations, so it reads only
+        #    the client files that changed. A router that stops serving a route
+        #    an unchanged client still calls is caught by the server half as
+        #    route:unserved (the link still declares it; a link that drops it
+        #    is a model change, hence a full check).
+        self.check_route_servers(scan, current, elsewhere, mapped)
+        self.check_route_clients(scan, mapped)
+
+    def check_route_servers(self, scan: dict, current: list, elsewhere: list,
+                            mapped: RouteIndex) -> None:
+        routers = scan.get("routers", [])
+        feeds = ([router["path"] for router in routers] + scan.get("router_search", [])
+                 + [entry["path"] for entry in scan.get("ignore_routers", [])])
+        if not self.guard(feeds, keys=("anchor:route-scan:empty", "route:no-server-block")
+                          + tuple(f"anchor:route-scan:{router['path']}" for router in routers),
+                          prefixes=("route:unmapped:", "route:unserved:", "route:unscannable:",
+                                    "route:bad-method:", "route:scan-empty:",
+                                    "route:unscanned-router:", "route:stale-ignore:")):
+            return
         registered: list[tuple[str, str, str, int]] = []
         router_files = []
         for router in scan.get("routers", []):
@@ -1956,9 +2892,11 @@ class Checker:
             router_files.append(rel)
             if router["scanner"] == "go-chi":
                 found = self.go_routes(rel, router.get("function_prefixes", {}))
-            else:
+            elif router["scanner"] == "regex":
                 found = self.regex_routes(rel, router["pattern"], router.get("prefix", ""))
-            if router["scanner"] == "go-chi" and router.get("prefix"):
+            else:
+                found = self.native_routes(rel, router["scanner"], router.get("receivers", {}))
+            if router["scanner"] != "regex" and router.get("prefix"):
                 found = [(m, router["prefix"] + p, line) for m, p, line in found]
             for method, path, line in found:
                 registered.append((method, path, rel, line))
@@ -1966,20 +2904,23 @@ class Checker:
         if scan.get("routers") and not registered:
             self.add("anchor:route-scan:empty", "anchors",
                      "route scan found no registrations -- misconfigured", fatal=True)
-        # every chi router in the server must be scanned or explicitly ignored
+        # every router in the server must be scanned or explicitly ignored
         ignored = {entry["path"] for entry in scan.get("ignore_routers", [])}
         for rel in self.expand(scan.get("router_search", []), ["**/*_test.go"]):
+            if rel in router_files or rel in ignored:
+                continue
             text = self.text(rel) or ""
-            if GO_NEW_ROUTER_RE.search(text) and rel not in router_files and rel not in ignored:
+            kind = next((k for k, expr in ROUTER_FILE_RES.items() if expr.search(text)), None)
+            if kind:
                 self.add(f"route:unscanned-router:{rel}", "routes",
-                         f"{rel} builds a chi router that is neither scanned nor ignored", fatal=True,
-                         path=rel)
+                         f"{rel} builds a {'chi' if kind == 'go-chi' else kind} router that is "
+                         "neither scanned nor ignored", fatal=True, path=rel)
         for entry in scan.get("ignore_routers", []):
             if not (self.root / entry["path"]).is_file():
                 self.add(f"route:stale-ignore:{entry['path']}", "routes",
                          f"ignore_routers entry {entry['path']} no longer exists -- remove it",
                          fatal=True)
-        mapped, unmapped_elsewhere = RouteIndex(current), RouteIndex(elsewhere)
+        unmapped_elsewhere = RouteIndex(elsewhere)
         for method, path, rel, line in registered:
             if not mapped.covering(method, path):
                 other = sorted({link["id"] for link in unmapped_elsewhere.covering(method, path)})
@@ -2002,12 +2943,27 @@ class Checker:
                 self.add(f"route:unserved:{d_method} {d_path}", "routes",
                          f"link:{link['id']} says the server serves {d_method} {d_path}, "
                          f"but no registration exists")
-        # client literals must be explained by a mapped link
+
+    def check_route_clients(self, scan: dict, mapped: RouteIndex) -> None:
+        """Client literals must be explained by a mapped link."""
+        globs = scan.get("client_globs", [])
+        if not globs or not self.guard(globs, keys=("anchor:route-scan:client",),
+                                       prefixes=("route:client-unexplained:",)):
+            return
         literal_res = [re.compile(expr) for expr in scan.get("client_literal_regexes", [])]
-        client_files = self.expand(scan.get("client_globs", []), scan.get("client_exclude", []))
-        if scan.get("client_globs") and not client_files:
+        client_files = self.expand(globs, scan.get("client_exclude", []))
+        if not client_files:
             self.add("anchor:route-scan:client", "anchors",
                      "client route scan matched no files -- misconfigured", fatal=True)
+        if self.scope is not None:
+            # only the changed client files (see check_routes). A literal is
+            # keyed by its text, not its file: an unchanged file may still hold
+            # one whose finding the changed files no longer raise, so with any
+            # file skipped those findings are "not re-checked", never stale.
+            changed = [rel for rel in client_files if self.in_scope([rel])]
+            if len(changed) < len(client_files):
+                self.skipped_prefixes.append("route:client-unexplained:")
+            client_files = changed
         unexplained: dict[str, list[tuple[str, int]]] = {}
         literal_count = 0
         for rel in client_files:
@@ -2095,7 +3051,9 @@ class Checker:
                 if has_code[side] and not link.get(key):
                     self.add(f"evidence:{link['id']}:{key}", "evidence",
                              f"current link:{link['id']} has code on the {key[:-8]} side "
-                             f"({ends[side]['id']}) but no {key}", fatal=True)
+                             f"({ends[side]['id']}) but no {key}; anchor it to a literal in "
+                             f"a file of {ends[side]['id']}, e.g. \"{key}\": [{{\"path\": "
+                             f"\"<file>\", \"find\": \"<text in that file>\"}}]", fatal=True)
 
     def _has_code(self, block_id: str) -> bool:
         return any(self.model.blocks[b].get("code") for b in self.model.ancestors(block_id))
@@ -2295,8 +3253,13 @@ class Checker:
             if finding["status"] == "closed":
                 continue
             for key in finding.get("detected_by", []):
-                if key != "manual" and key not in fired:
+                if key == "manual" or key in fired:
+                    continue
+                if self.evaluated(key):
                     stale.append(f"{finding['id']}:{key}")
+                else:
+                    # its guard was skipped by `check --changed`: not re-checked, not stale
+                    self.unverified.append(f"{finding['id']}:{key}")
         return stale
 
     def run(self) -> None:
@@ -2342,6 +3305,14 @@ class Checker:
             entries = model.sections.get(plugin.kind) or []
             if not entries:
                 continue
+            # the files a kind declares (entry paths + IMPACT_GLOBS); a kind that
+            # declares none cannot be scoped and always runs
+            feeds = sorted(joints.references(plugin, entries))
+            if feeds and not self.guard(feeds, prefixes=(f"{plugin.kind}:",)):
+                continue
+            if not feeds:
+                self.guards_total += 1
+                self.guards_run += 1
             outcome = joints.run_check(plugin, self.root, entries, model)
             for key, message, fatal in outcome.problems:
                 self.add(key, "joints", message, fatal=fatal)
@@ -2370,6 +3341,10 @@ class CheckResult:
     # the check ran but read nothing (load_error says why); hooks tell an empty,
     # not yet mapped model apart from a broken one by this, not by `ok`
     nothing_scanned: bool = False
+    # `check --changed REV`: {"rev", "files", "guards_run", "guards_total",
+    # "unverified", "fallback"}; fallback says why the full check ran instead.
+    # None for a plain `check`.
+    changed: dict | None = None
 
     @property
     def ok(self) -> bool:
@@ -2397,20 +3372,29 @@ class CheckResult:
         return rows
 
 
-def evaluate(cfg: Config) -> CheckResult:
-    """Run every check against the code and return the result, printing nothing."""
+def evaluate(cfg: Config, changed: str | None = None) -> CheckResult:
+    """Run every check against the code and return the result, printing nothing.
+    With `changed` (a git revision), run only the guards that read a file
+    changed since it (see change_scope) -- or the full check when the change set
+    cannot be trusted; result.changed says which."""
     result = CheckResult()
     try:
         model = load_model(cfg)
     except ModelError as exc:
         result.load_error = str(exc)
         return result
+    scope: list[str] | None = None
+    if changed is not None:
+        scope, fallback = change_scope(cfg, changed)
+        result.changed = {"rev": changed, "files": len(scope or []), "guards_run": 0,
+                          "guards_total": 0, "unverified": [], "fallback": fallback}
     result.counts = {k: len(v) for k, v in model.entities.items()}
     result.schema_errors = validate_schema(model)
     result.files = len(model.files)
     if result.schema_errors:
         return result
     checker = Checker(model)
+    checker.scope = scope
     try:
         checker.run()
     except Exception as exc:  # noqa: BLE001 -- converted to a loud, non-passing result
@@ -2418,6 +3402,9 @@ def evaluate(cfg: Config) -> CheckResult:
                              "-- nothing was verified; report this as a crossweft bug")
         return result
     result.stale = checker.reconcile_findings()
+    if result.changed is not None:
+        result.changed.update(guards_run=checker.guards_run, guards_total=checker.guards_total,
+                              unverified=checker.unverified)
     result.new = [p for p in checker.problems if p.finding is None]
     result.known = [p for p in checker.problems if p.finding is not None]
     result.info = checker.info
@@ -2491,10 +3478,19 @@ def sarif_payload(result: CheckResult, fallback: str = CONFIG_FILE) -> dict:
             **({"partialFingerprints": {"crossweftKey/v1": key}} if key else {}),
         }
 
+    def text_key(kind: str, text: str) -> str:
+        # a problem with no finding key of its own is identified by its rule and
+        # its text (whitespace and path separators normalised), so a re-upload
+        # through the API updates the same alert instead of opening a duplicate
+        normalised = " ".join(text.replace("\\", "/").split())
+        return f"{kind}:{normalised}"
+
     rows = []
     if result.load_error:
-        rows.append(result_row("crossweft/model", result.load_error))
-    rows += [result_row("crossweft/model", f"model schema: {e}") for e in result.schema_errors]
+        rows.append(result_row("crossweft/model", result.load_error,
+                               key=text_key("model", result.load_error)))
+    rows += [result_row("crossweft/model", f"model schema: {e}",
+                        key=text_key("model-schema", str(e))) for e in result.schema_errors]
     for problem in result.new:
         must = " (must be fixed; a finding cannot excuse it)" if problem.fatal else ""
         rows.append(result_row(f"crossweft/{problem.category}", problem.message + must,
@@ -2512,7 +3508,9 @@ def sarif_payload(result: CheckResult, fallback: str = CONFIG_FILE) -> dict:
     if result.render_stale:
         rows.append(result_row("crossweft/render",
                                f"generated docs are stale ({', '.join(result.render_stale)}) "
-                               "-- run `crossweft render`"))
+                               "-- run `crossweft render`",
+                               # one alert for "the docs are stale", whichever files it lists
+                               key="render:stale"))
     invocation: dict = {"executionSuccessful": not (result.load_error or result.schema_errors)}
     if result.load_error:
         invocation["toolExecutionNotifications"] = [
@@ -2539,30 +3537,40 @@ def sarif_payload(result: CheckResult, fallback: str = CONFIG_FILE) -> dict:
     }
 
 
-def sarif_config_error(message: str) -> str:
-    """A failed-invocation SARIF for when crossweft.json itself cannot be read."""
-    return json.dumps(sarif_payload(CheckResult(load_error=message)), ensure_ascii=True,
-                      indent=2)
+def json_payload(result: CheckResult) -> dict:
+    """The `check --format json` document."""
+    return {
+        "ok": result.ok,
+        "error": result.load_error,
+        "schema_errors": result.schema_errors,
+        "new": [p.as_dict() for p in result.new],
+        "known": [p.as_dict() for p in result.known],
+        "stale_findings": result.stale,
+        "stale_generated": result.render_stale,
+        "info": result.info,
+        "counts": result.counts,
+        "scanned": {"files": result.files, "items": result.items},
+        # null for a plain check; with --changed, "fallback" is non-null when
+        # the full check ran instead
+        "changed_only": result.changed,
+    }
+
+
+def machine_document(result: CheckResult, fmt: str) -> str:
+    """`result` as the one json or sarif document a machine format puts on stdout."""
+    payload = sarif_payload(result) if fmt == "sarif" else json_payload(result)
+    return json.dumps(payload, ensure_ascii=True, indent=2)
+
+
+def config_error_document(message: str, fmt: str) -> str:
+    """A failed-check json/sarif document for when crossweft.json itself cannot be
+    read: same shape as a normal run, `ok` false / a failed invocation, exit 2."""
+    return machine_document(CheckResult(load_error=message), fmt)
 
 
 def print_result(cfg: Config, result: CheckResult, fmt: str = "text") -> None:
-    if fmt == "sarif":
-        print(json.dumps(sarif_payload(result), ensure_ascii=True, indent=2))
-        return
-    if fmt == "json":
-        payload = {
-            "ok": result.ok,
-            "error": result.load_error,
-            "schema_errors": result.schema_errors,
-            "new": [p.as_dict() for p in result.new],
-            "known": [p.as_dict() for p in result.known],
-            "stale_findings": result.stale,
-            "stale_generated": result.render_stale,
-            "info": result.info,
-            "counts": result.counts,
-            "scanned": {"files": result.files, "items": result.items},
-        }
-        print(json.dumps(payload, ensure_ascii=True, indent=2))
+    if fmt in ("json", "sarif"):
+        print(machine_document(result, fmt))
         return
     if fmt == "github":
         # GitHub Actions workflow commands: one annotation per problem.
@@ -2621,6 +3629,20 @@ def print_result(cfg: Config, result: CheckResult, fmt: str = "text") -> None:
                 "`crossweft render`")
         for line in result.info:
             out(f"[INFO] {line}")
+        partial = _changed_only(result)
+        if result.changed and result.changed["fallback"]:
+            out(f"[INFO] --changed {result.changed['rev']}: ran the FULL check instead -- "
+                f"{result.changed['fallback']}")
+        elif partial:
+            out(f"[INFO] --changed {partial['rev']}: only the {partial['guards_run']} of "
+                f"{partial['guards_total']} guards that read one of {partial['files']} changed (or "
+                "git-ignored) path(s) ran; model-wide checks ran in full. Not a full check: run "
+                "`crossweft check` before a release.")
+            if partial["unverified"]:
+                out(f"[INFO] {len(partial['unverified'])} finding key(s) not re-checked (their "
+                    "guards read no changed file), so neither confirmed nor stale:")
+                for entry in partial["unverified"]:
+                    out(f"   - {entry}")
     if result.load_error:
         out("RESULT: ERROR (not verified -- see [ERR] above; this is not a pass)")
     elif result.schema_errors:
@@ -2629,19 +3651,40 @@ def print_result(cfg: Config, result: CheckResult, fmt: str = "text") -> None:
     else:
         out(f"RESULT: {'PASS' if result.ok else 'FAIL'} (new={len(result.new)} "
             f"known={len(result.known)} stale_findings={len(result.stale)})")
-    out(f"SCANNED: files={result.files} items={result.items}")
+    partial = _changed_only(result)
+    suffix = (f"  (changed-only: {partial['guards_run']} of {partial['guards_total']} guards)"
+              if partial else "  (full check; --changed fell back)"
+              if result.changed and result.changed["fallback"] else "")
+    out(f"SCANNED: files={result.files} items={result.items}{suffix}")
 
 
-def run_check(cfg: Config, fmt: str = "text") -> int:
+def _changed_only(result: CheckResult) -> dict | None:
+    """The `--changed` summary when only part of the guards ran, else None (a
+    plain check, or a --changed run that fell back to the full check)."""
+    if result.changed is None or result.changed["fallback"]:
+        return None
+    return result.changed
+
+
+def run_check(cfg: Config, fmt: str = "text", changed: str | None = None) -> int:
     """`crossweft check`. Exit 0 = consistent, 1 = problems, 2 = no verdict: the
     model or config could not be read, or nothing was scanned (never a pass)."""
+    if changed is not None and fmt == "sarif":
+        # code scanning reads a missing alert as fixed: a partial run uploaded as
+        # SARIF would close the alerts of every guard it skipped. A usage error,
+        # not a check: stderr only, and stdout stays empty so an upload of it
+        # fails as "not SARIF" instead of reading as a run with no alerts
+        sys.stderr.write("[ERR] --changed cannot be combined with --format sarif: code "
+                         "scanning would close the alerts of every guard it skipped -- "
+                         "upload a full check\n")
+        return 2
     if fmt in ("json", "sarif"):
         # a machine format owns stdout: anything else printed while checking (a
         # joint plugin's print) goes to stderr instead of corrupting the document
         with contextlib.redirect_stdout(sys.stderr):
-            result = evaluate(cfg)
+            result = evaluate(cfg, changed)
     else:
-        result = evaluate(cfg)
+        result = evaluate(cfg, changed)
     print_result(cfg, result, fmt)
     if result.load_error or result.schema_errors:
         return 2
@@ -3464,9 +4507,76 @@ def changed_files(root: Path, base: str | None) -> tuple[list[str], str]:
     else:
         ref = "HEAD"
         label = "HEAD .. working tree"
+    # Outside a work tree `git diff` silently switches to --no-index mode and
+    # prints its usage; say what is wrong and what to pass instead.
+    probe = subprocess.run(["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if probe.returncode != 0 or probe.stdout.strip() != "true":
+        raise ImpactError(f"{root} is not inside a git work tree, so there are no changes to read; "
+                          "name the changed files instead: `crossweft impact <file> ...`")
     files = set(_git_paths(root, "diff", "--name-only", "--relative", "--no-renames", ref))
     files.update(_git_paths(root, "ls-files", "--others", "--exclude-standard"))
     return sorted(files), label
+
+
+def change_scope(cfg: Config, rev: str) -> tuple[list[str] | None, str | None]:
+    """`check --changed REV`: (paths whose guards must run, None), or (None, why)
+    when the change set cannot be trusted and the full check must run instead.
+
+    The scope is every path that differs between REV and the working tree
+    (committed, staged or not), every untracked file, and every git-ignored file
+    or directory -- git cannot say whether an ignored file changed, so a guard
+    reading one always runs. The full check runs when git cannot list the
+    changes, or when crossweft.json, a model file, the lock file or a joint
+    plugin is in that set: a changed map can move any guard onto any file."""
+    root = cfg.root
+    if not rev or rev.startswith("-"):
+        return None, f"'{rev}' is not a revision"
+    try:
+        commit = _git_lines(root, "rev-parse", "--verify", "--quiet", rev + "^{commit}")
+    except ImpactError:
+        commit = []
+    if not commit:
+        return None, f"'{rev}' is not a commit git can resolve here"
+    try:
+        paths = set(_git_paths(root, "diff", "--name-only", "--relative", "--no-renames",
+                               commit[0]))
+        paths.update(_git_paths(root, "ls-files", "--others", "--exclude-standard"))
+        paths.update(p.rstrip("/") for p in _git_paths(root, "ls-files", "--others", "--ignored",
+                                                       "--exclude-standard", "--directory"))
+    except ImpactError as exc:
+        return None, f"the changes since {rev} could not be listed ({exc})"
+    control = [(CONFIG_FILE, CONFIG_FILE), (cfg.model_dir.as_posix(), "the model"),
+               (cfg.lock_file.as_posix(), "the pair lock file")]
+    if cfg.joints_dir:
+        control.append((cfg.joints_dir.as_posix(), "a joint plugin"))
+    for target, what in control:
+        hit = sorted(p for p in paths if _scope_hit(p, target))
+        if hit:
+            return None, f"{what} changed ({hit[0]})"
+    return sorted(paths), None
+
+
+def _scope_hit(changed: str, target: str) -> bool:
+    """Whether a guard target (file, directory or glob) may read the changed
+    path. Errs towards True, never False: compared case-insensitively (a
+    case-insensitive file system globs `Web/a.ts` for `web/*.ts`), and a glob
+    is matched part by part, so a changed directory hits a glob that can reach
+    into it, and `**` reaches anything below."""
+    changed, target = changed.rstrip("/").casefold(), target.rstrip("/").casefold()
+    if changed == target or changed.startswith(target + "/") or target.startswith(changed + "/"):
+        return True
+    if not any(ch in target for ch in "*?["):
+        return False
+    parts, pattern = changed.split("/"), target.split("/")
+    for index, part in enumerate(parts):
+        if index >= len(pattern):
+            return False            # deeper than the glob reaches
+        if pattern[index] == "**":
+            return True
+        if not fnmatch.fnmatchcase(part, pattern[index]):
+            return False
+    return True                     # the path, or a directory the glob reaches into
 
 
 def _normalize_paths(root: Path, paths: list[str]) -> list[str]:
@@ -3713,6 +4823,11 @@ def run_impact(cfg: Config, base: str | None, paths: list[str], as_json: bool = 
     if report["unmapped"]:
         out(f"Not on the map ({len(report['unmapped'])}): {', '.join(report['unmapped'][:20])}"
             + (" ..." if len(report["unmapped"]) > 20 else ""))
+    if set(report["unmapped"]) == set(changed):
+        out("Nothing on the map is touched. If these files are code of a component, add them to "
+            f"that block's `code` in {cfg.model_dir.as_posix()}/*.json and run `crossweft check`; "
+            "otherwise there is no seam to keep in agreement.")
+        return 0
     out(f"Next: fix the other sides, update {cfg.model_dir.as_posix()}/*.json, then "
         "`crossweft check` (and `crossweft render` if you commit the generated docs).")
     return 0
@@ -4495,10 +5610,53 @@ def run_baseline(cfg: Config, owner: str | None, next_step: str | None,
     return 0
 
 
+MODEL_REFERENCE_URL = "https://github.com/happyin-app/crossweft/blob/main/docs/model-reference.md"
+
+EXAMPLE_DIR = "crossweft-example"
+EXAMPLE_MODEL_FILE = "20-example.json"
+# One hand-written value in two languages: the smallest seam that needs a guard.
+EXAMPLE_FILES = {
+    f"{EXAMPLE_DIR}/api/version.py": '# The API version this server speaks.\nAPI_VERSION = "2026-10-01"\n',
+    f"{EXAMPLE_DIR}/web/version.ts": ("// The API version this client sends; must equal the server's.\n"
+                                      'export const API_VERSION = "2026-10-01";\n'),
+}
+EXAMPLE_REGEX = 'API_VERSION = "([^"]+)"'
+
+
+def example_model() -> dict:
+    """The model fragment `init --example` writes: two blocks, the link between
+    them, and the join that compares the value both sides type by hand."""
+    py, ts = (f"{EXAMPLE_DIR}/api/version.py", f"{EXAMPLE_DIR}/web/version.ts")
+    return {
+        "$comment": (f"A working example written by `crossweft init --example`. Delete "
+                     f"{EXAMPLE_DIR}/ and this file once your own blocks are on the map. "
+                     f"Field reference: {MODEL_REFERENCE_URL}"),
+        "blocks": [
+            {"id": "example-api", "name": "Example API", "kind": "service", "lane": "app",
+             "status": "current", "summary": "Python side of the example.",
+             "code": [f"{EXAMPLE_DIR}/api/"]},
+            {"id": "example-web", "name": "Example web client", "kind": "site", "lane": "app",
+             "status": "current", "summary": "TypeScript side of the example.",
+             "code": [f"{EXAMPLE_DIR}/web/"]}],
+        "links": [
+            {"id": "example-web-api", "from": "example-web", "to": "example-api",
+             "transport": "https", "status": "current",
+             "summary": "The client sends the API version the server expects.",
+             "contract": {"name": "API version", "enforcement": "duplicated"},
+             "from_anchors": [{"path": ts, "find": "export const API_VERSION"}],
+             "to_anchors": [{"path": py, "find": "API_VERSION ="}]}],
+        "joins": [
+            {"id": "example-api-version", "name": "API version", "link": "example-web-api",
+             "points": [{"path": ts, "side": "example-web", "regex": EXAMPLE_REGEX},
+                        {"path": py, "side": "example-api", "regex": EXAMPLE_REGEX}]}],
+    }
+
+
 def run_init(root: Path, language: str = "en", agents: bool = True,
-             command: str = harness.DEFAULT_COMMAND) -> int:
+             command: str = harness.DEFAULT_COMMAND, example: bool = False) -> int:
     """Create crossweft.json, an empty model skeleton and (unless agents=False)
-    the agent harness. Never overwrites crossweft's own files."""
+    the agent harness; with example=True also a tiny two-file seam that the
+    check guards. Never overwrites an existing file."""
     root = root.resolve()
     config_path = root / CONFIG_FILE
     if config_path.exists():
@@ -4512,6 +5670,10 @@ def run_init(root: Path, language: str = "en", agents: bool = True,
     if model_dir.exists() and any(model_dir.iterdir()):
         out(f"[ERR] {cfg.model_dir.as_posix()} already has files -- nothing written")
         return 2
+    if example and (root / EXAMPLE_DIR).exists():
+        out(f"[ERR] --example writes into {EXAMPLE_DIR}/, which already exists -- nothing "
+            f"written; move it away or run `crossweft init` without --example")
+        return 2
     model_dir.mkdir(parents=True, exist_ok=True)
     config = {"model_dir": cfg.model_dir.as_posix(), "output_dir": cfg.output_dir.as_posix(),
               "language": language}
@@ -4521,10 +5683,19 @@ def run_init(root: Path, language: str = "en", agents: bool = True,
     meta = {"meta": {"schema": SCHEMA_ID, "title": f"{root.name} system map",
                      "lanes": [{"id": "app", "name": "Application"}]}}
     (model_dir / "00-meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
-    body = {"$comment": "Blocks, links and their guards. See docs/model-reference.md.",
+    body = {"$comment": f"Blocks, links and their guards. Field reference: {MODEL_REFERENCE_URL}",
             "blocks": [], "links": [], "joins": [], "sets": [], "pairs": [], "findings": []}
     (model_dir / "10-system.json").write_text(json.dumps(body, indent=2) + "\n", encoding="utf-8")
     out(f"[OK] wrote {CONFIG_FILE} and {cfg.model_dir.as_posix()}/ (00-meta.json, 10-system.json)")
+    if example:
+        for rel, text in EXAMPLE_FILES.items():
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            with open(root / rel, "x", encoding="utf-8", newline="\n") as handle:
+                handle.write(text)
+        (model_dir / EXAMPLE_MODEL_FILE).write_text(
+            json.dumps(example_model(), indent=2) + "\n", encoding="utf-8")
+        out(f"[OK] wrote the example: {', '.join(EXAMPLE_FILES)} and "
+            f"{cfg.model_dir.as_posix()}/{EXAMPLE_MODEL_FILE}")
     if agents:
         try:
             for change in harness.install(root, cfg.model_dir.as_posix(), command):
@@ -4533,6 +5704,12 @@ def run_init(root: Path, language: str = "en", agents: bool = True,
             out(f"[ERR] agent harness not installed: {exc}. {CONFIG_FILE} asks for it, so "
                 "`crossweft check` fails until `crossweft agents` succeeds.")
             return 1
+    if example:
+        py, ts = list(EXAMPLE_FILES)
+        out(f"Next: `crossweft check` passes. Change API_VERSION in {py} only and run it again: "
+            f"it fails and names {ts}, the file to bring in line. Delete {EXAMPLE_DIR}/ and "
+            f"{cfg.model_dir.as_posix()}/{EXAMPLE_MODEL_FILE} when you map your own code.")
+        return 0
     out("Next: `crossweft discover` lists values that already appear on both sides of a "
         "cross-language seam; add the blocks and links they belong to, then `crossweft check`.")
     return 0

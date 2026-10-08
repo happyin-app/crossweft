@@ -77,6 +77,6 @@ Open or accepted: **0** (closed: 0). Full register with evidence: [findings.md](
 5. Found a mismatch you cannot fix now? Record a finding with an owner, a next step and the detector key; when it is fixed, the check itself asks you to close the record.
 6. `crossweft show <id>` prints one block, link or data item with its neighbours.
 
-Model: 7 blocks, 7 links, 0 flows, 0 data items, 2 value guards, 4 set guards, 0 paired regions, 0 findings.
+Model: 7 blocks, 7 links, 0 flows, 0 data items, 2 value guards, 5 set guards, 0 paired regions, 0 findings.
 
 Contracts of current links: `duplicated` 3, `convention` 3, `compiler` 1 (`compiler` — a call inside one binary; `--` — the link has no second side in our code).

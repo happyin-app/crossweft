@@ -306,6 +306,41 @@ def guarded_values(cfg: Config) -> tuple[set[str], bool, str | None]:
     return values, env_guarded, None
 
 
+# Printed when discovery finds nothing: the smallest model fragment that guards
+# one value typed by hand in two places. Every <...> is to be replaced.
+STARTER_SNIPPET = {
+    "blocks": [
+        {"id": "api", "name": "<server>", "kind": "service", "lane": "app", "status": "current",
+         "summary": "<what it is>", "code": ["<server dir>/"]},
+        {"id": "web", "name": "<client>", "kind": "site", "lane": "app", "status": "current",
+         "summary": "<what it is>", "code": ["<client dir>/"]}],
+    "links": [
+        {"id": "web-api", "from": "web", "to": "api", "transport": "https", "status": "current",
+         "summary": "<what the client uses the server for>",
+         "contract": {"name": "<what they agree on>", "enforcement": "duplicated"},
+         "from_anchors": [{"path": "<client file>", "find": "<text in that file>"}],
+         "to_anchors": [{"path": "<server file>", "find": "<text in that file>"}]}],
+    "joins": [
+        {"id": "api-version", "name": "<the shared value>", "link": "web-api", "points": [
+            {"path": "<client file>", "side": "web", "regex": "API_VERSION = \"([^\"]+)\""},
+            {"path": "<server file>", "side": "api", "regex": "API_VERSION = \"([^\"]+)\""}]}],
+}
+
+
+def _compact_json(model: dict) -> list[str]:
+    """One entity per line: short enough to read in a terminal, still valid JSON."""
+    lines = []
+    keys = list(model)
+    for index, key in enumerate(keys):
+        opener = "{" if index == 0 else " "
+        lines.append(f"{opener}{json.dumps(key)}: [")
+        items = model[key]
+        for position, item in enumerate(items):
+            tail = "," if position < len(items) - 1 else ("]," if index < len(keys) - 1 else "]}")
+            lines.append("   " + json.dumps(item, ensure_ascii=True) + tail)
+    return lines
+
+
 def run_discover(cfg: Config, limit: int, as_json: bool) -> int:
     try:
         report = discover(cfg, limit)
@@ -341,7 +376,16 @@ def run_discover(cfg: Config, limit: int, as_json: bool) -> int:
         if env["undeclared_now"]:
             out(f"  read but NOT declared right now: {', '.join(env['undeclared_now'])}")
         out(f"  set: {json.dumps(env['set'], ensure_ascii=True)}")
-    out("Next: confirm each candidate belongs to a real link between two blocks, add the guard "
-        "with \"link\": \"<link-id>\" to the model, then run `crossweft check`.")
+    if report["candidates"] or (env and not env.get("already_on_map")):
+        out("Next: confirm each candidate belongs to a real link between two blocks, add the "
+            "guard with \"link\": \"<link-id>\" to the model, then run `crossweft check`.")
+    else:
+        model = cfg.model_dir.as_posix()
+        out(f"Nothing to suggest, so start by hand. Merge this into a file in {model}/, "
+            "replace every <...>, then run `crossweft check` (a regex in a join captures the "
+            "value both files must agree on):")
+        for line in _compact_json(STARTER_SNIPPET):
+            out("  " + line)
+        out("A working copy to compare with: `crossweft init --example` in an empty directory.")
     out(f"SCANNED: files={report['scanned']['files']} items={report['scanned']['items']}")
     return 0

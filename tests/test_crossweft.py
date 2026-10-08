@@ -214,6 +214,23 @@ class DemoTest(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertIn("link:web-orders", output)
 
+    def test_impact_on_an_unmapped_file_says_so_instead_of_fix_the_other_side(self) -> None:
+        stray = self.root / "notes.txt"
+        stray.write_text("not code of any block\n", encoding="utf-8")
+        code, output = run(["--root", str(self.root), "impact", str(stray)])
+        self.assertEqual(code, 0, output)
+        self.assertIn("Not on the map (1): notes.txt", output)
+        self.assertIn("Nothing on the map is touched", output)
+        self.assertNotIn("Next: fix the other sides", output)
+
+    def test_impact_outside_a_git_work_tree_is_a_clear_error(self) -> None:
+        ceiling = str(self.root.parent)
+        with mock.patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": ceiling}):
+            code, output = run(["--root", str(self.root), "impact"])
+        self.assertEqual(code, 2, output)
+        self.assertIn("not inside a git work tree", output)
+        self.assertNotIn("--no-index", output)
+
     def test_impact_in_a_monorepo_subdirectory(self) -> None:
         """crossweft.json below the git top level: diff paths must still match."""
         mono = Path(self.tmp.name) / "mono"
@@ -307,7 +324,7 @@ class DemoTest(unittest.TestCase):
         self.assertIn("agents:hooks:stop", output)
 
     def test_an_edited_agents_block_fails_the_check(self) -> None:
-        self.edit("AGENTS.md", "Change both sides.", "Change one side.")
+        self.edit("AGENTS.md", "Never weaken a guard", "Weaken a guard")
         code, output = self.check()
         self.assertEqual(code, 1, output)
         self.assertIn("agents:agents-md", output)

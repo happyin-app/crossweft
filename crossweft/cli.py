@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import __version__, discover, engine, harness, hooks, runner
+from . import __version__, discover, engine, harness, hooks, importers, mcp, runner
 
 
 def _config(args: argparse.Namespace) -> engine.Config:
@@ -104,16 +104,24 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", metavar="<command>")
 
     init = sub.add_parser("init", help="create crossweft.json, an empty model and the agent "
-                                       "harness")
+                                       "harness",
+        description="Create crossweft.json, an empty model and the agent harness.",
+        epilog="Example: crossweft init --example && crossweft check")
     init.add_argument("--language", default="en", help="generated docs language (en, ru)")
     init.add_argument("--no-agents", action="store_true",
                       help="do not install the agent harness (see `crossweft agents`)")
+    init.add_argument("--example", action="store_true",
+                      help="also write a tiny working two-file example (Python + TypeScript) "
+                           "that `crossweft check` guards; refuses if crossweft-example/ exists")
     init.add_argument("--command", dest="launcher", default=harness.DEFAULT_COMMAND,
                       help="how the hooks start crossweft, recorded as agent.command "
                            "(default: crossweft)")
 
     agents = sub.add_parser("agents", help="make the repository carry its agent harness: "
-                                           "hooks, AGENTS.md rules, skill")
+                                           "hooks, AGENTS.md rules, skill",
+        description="Write or repair the agent harness: Claude Code hooks, the AGENTS.md "
+                    "block and the crossweft skill.",
+        epilog="Example: crossweft agents --command 'python -m crossweft'")
     agents.add_argument("--command", dest="launcher", default=None,
                         help="how the hooks start crossweft, recorded as agent.command in "
                              "crossweft.json (default: agent.command, else crossweft; e.g. "
@@ -127,24 +135,42 @@ def build_parser() -> argparse.ArgumentParser:
                "2 = no verdict: the config or model could not be read or validated, or "
                "nothing was scanned -- never a pass. "
                "Example: crossweft check --format github")
-    check.add_argument("--format", choices=("text", "json", "github", "sarif"), default="text")
+    check.add_argument("--format", choices=("text", "json", "github", "sarif"), default="text",
+                       help="output: text (default), json, github annotations, or SARIF 2.1.0")
     check.add_argument("--json", action="store_true", help="same as --format json")
+    check.add_argument("--changed", metavar="REV",
+                       help="run only the guards that read a file changed since REV (committed, "
+                            "staged, unstaged or untracked); the full check runs instead when "
+                            "the map, the lock, a joint plugin or the change set itself changed "
+                            "or cannot be read. Output says `changed-only: N of M guards`")
 
-    render = sub.add_parser("render", help="write the generated docs and viewer")
+    render = sub.add_parser("render", help="write the generated docs and viewer",
+        description="Write the generated Markdown pages and viewer.html into output_dir.",
+        epilog="Example: crossweft render --check")
     render.add_argument("--check", action="store_true", help="only verify they are up to date")
 
-    show = sub.add_parser("show", help="print one entity and its neighbours")
-    show.add_argument("id")
+    show = sub.add_parser("show", help="print one entity and its neighbours",
+        description="Print one block, link, flow, data item, guard or finding, and what "
+                    "it connects to.",
+        epilog="Example: crossweft show join:api-version")
+    show.add_argument("id", help="an id, bare or as kind:id the way check, impact and hooks "
+                                 "print it (a problem key works too)")
 
     impact = sub.add_parser("impact", help="which seams a change touches, and where the other "
-                                           "side of each lives")
+                                           "side of each lives",
+        description="List the seams that run through the changed (or given) files, the file "
+                    "on the other side of each, and the guard that compares them.",
+        epilog="Example: crossweft impact server/main.go")
     impact.add_argument("--base", help="also count committed work since the merge-base with "
                                        "this ref (e.g. origin/main)")
-    impact.add_argument("--json", action="store_true")
+    impact.add_argument("--json", action="store_true", help="machine-readable output")
     impact.add_argument("paths", nargs="*", help="explicit files/dirs instead of git changes")
 
     attest = sub.add_parser("attest", help="record that the regions of a pair were read and "
-                                           "agree")
+                                           "agree",
+        description="Record in the lock file that every region of a pair was re-read and "
+                    "agrees.",
+        epilog='Example: crossweft attest price-rounding --reason "both round half-up"')
     attest.add_argument("ids", nargs="*", help="pair ids")
     attest.add_argument("--reason", help="what you compared (required, lands in the lock file)")
     attest.add_argument("--all", action="store_true", help="every changed or unattested pair")
@@ -157,23 +183,48 @@ def build_parser() -> argparse.ArgumentParser:
 
     base = sub.add_parser("baseline",
                           help="record every current problem as open findings (adopting in a "
-                               "repo with existing drift); new drift still fails")
+                               "repo with existing drift); new drift still fails",
+        description="Record every current problem as open findings, one per category, when "
+                    "adopting crossweft in a repository with existing drift.",
+        epilog='Example: crossweft baseline --owner platform --next-step "fix before 1.0"')
     base.add_argument("--owner", help="who owns the recorded drift (required)")
     base.add_argument("--next-step", dest="next_step", help="what happens next (required)")
     base.add_argument("--file", default="90-baseline.json",
                       help="model file to create (default: 90-baseline.json)")
 
-    disc = sub.add_parser("discover", help="list seams that exist in the code but not on the map")
-    disc.add_argument("--json", action="store_true")
+    disc = sub.add_parser("discover", help="list seams that exist in the code but not on the map",
+        description="List values typed into two languages that no guard reads yet, each with "
+                    "a ready-to-paste guard whose regexes were tried on the files.",
+        epilog="Example: crossweft discover --limit 5")
+    disc.add_argument("--json", action="store_true", help="machine-readable output")
     disc.add_argument("--limit", type=_positive_int, default=20,
                       help="how many candidates to list (at least 1)")
 
-    val = sub.add_parser("validators", help="run every validate_*.py and prove each did work")
+    imp = sub.add_parser("import", help="print guards for a seam whose one side is a schema "
+                                        "(OpenAPI JSON or .proto) and the other hand-written",
+        description="Print ready-to-paste sets and joins that compare a schema with a "
+                    "hand-written file. Exit 0 = guards printed, 1 = nothing matched, "
+                    "2 = schema unreadable.",
+        epilog="Example: crossweft import openapi api/openapi.json --against web/src/api.ts")
+    imp.add_argument("format", choices=("openapi", "proto"),
+                     help="schema format (OpenAPI 3.x as JSON only: no YAML parser in stdlib)")
+    imp.add_argument("spec", help="the schema file (OpenAPI 3.x .json, or .proto)")
+    imp.add_argument("--against", required=True, help="the hand-written file on the other side")
+    imp.add_argument("--link", help="link id to put on every suggested guard")
+    imp.add_argument("--json", action="store_true", help="machine-readable output")
+
+    val = sub.add_parser("validators", help="run every validate_*.py and prove each did work",
+        description="Run every validate_*.py; fail any that scanned nothing, lacks a real "
+                    "self-test, or reports a finding.",
+        epilog="Example: crossweft validators --self-test")
     val.add_argument("--dir", help="validators directory (default: validators.dir in "
                                    "crossweft.json)")
     val.add_argument("--self-test", action="store_true", help="prove the runner itself works")
 
-    hook = sub.add_parser("hook", help="agent hook adapter (reads the agent's JSON on stdin)")
+    hook = sub.add_parser("hook", help="agent hook adapter (reads the agent's JSON on stdin)",
+        description="Agent hook adapter: read the agent's JSON on stdin and answer in that "
+                    "agent's format. Never exits 2.",
+        epilog="Example: crossweft hook claude-code stop < payload.json")
     # validated by hooks.run_hook, not by argparse: a usage error exits 2, which
     # blocks an agent at Stop (see run_hook)
     hook.add_argument("agent", nargs="?", help=f"one of {', '.join(hooks.AGENTS)}")
@@ -183,7 +234,13 @@ def build_parser() -> argparse.ArgumentParser:
                            "own hooks already run crossweft")
     hook.error = _skip_hook   # type: ignore[method-assign]
 
-    sub.add_parser("self-test", help="run the engine and runner self-tests (planted fixtures)")
+    sub.add_parser("mcp", help="read-only MCP server on stdio for coding agents",
+        description="Serve check, impact, show, discover and other_side as tools of a "
+                    "read-only MCP server on stdio.",
+        epilog="Example: claude mcp add crossweft -- crossweft mcp")
+
+    sub.add_parser("self-test", help="run the engine and runner self-tests (planted fixtures)",
+        description="Run the engine and validator-runner self-tests on planted fixtures.")
     return parser
 
 
@@ -221,6 +278,10 @@ def main(argv: list[str] | None = None) -> int:
     if command == "hook":
         return hooks.run_hook(args.agent, args.event, _hook_stdin(),
                               from_plugin=args.from_plugin)
+    if command == "mcp":
+        # the root is resolved per tool call, so a missing crossweft.json is a
+        # tool error the client sees, not a server that never starts
+        return mcp.serve(args.root)
     if command == "init":
         root = Path(args.root).resolve() if args.root else Path.cwd()
         launcher = args.launcher.strip()
@@ -228,7 +289,7 @@ def main(argv: list[str] | None = None) -> int:
             engine.out("[ERR] --command must not be empty -- nothing written")
             return 2
         code = engine.run_init(root, args.language, agents=not args.no_agents,
-                               command=launcher)
+                               command=launcher, example=args.example)
         if code == 0 and not args.no_agents:
             try:
                 _declare_agent(root, launcher, False, dry_run=False)
@@ -242,13 +303,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         cfg = _config(args)
     except engine.ModelError as exc:
-        if command == "check" and args.format == "sarif" and not args.json:
-            print(engine.sarif_config_error(str(exc)))   # stdout stays one SARIF document
+        fmt = "json" if command == "check" and args.json else getattr(args, "format", None)
+        if command == "check" and fmt in ("json", "sarif"):
+            # a machine format owns stdout: still one document, ok false, exit 2
+            print(engine.config_error_document(str(exc), fmt))
         else:
             engine.out(f"[ERR] {exc}")
         return 2
     if command == "check":
-        return engine.run_check(cfg, "json" if args.json else args.format)
+        return engine.run_check(cfg, "json" if args.json else args.format, args.changed)
     if command == "render":
         return engine.run_render(cfg, check_only=args.check)
     if command == "show":
@@ -270,6 +333,9 @@ def main(argv: list[str] | None = None) -> int:
         return engine.run_baseline(cfg, args.owner, args.next_step, args.file)
     if command == "discover":
         return discover.run_discover(cfg, args.limit, args.json)
+    if command == "import":
+        return importers.run_import(cfg, args.format, args.spec, args.against, args.link,
+                                    args.json)
     if command == "validators":
         directory = Path(args.dir) if args.dir else cfg.validators_dir
         if directory is None:
