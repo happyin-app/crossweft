@@ -223,3 +223,35 @@ class Configuration(Repo):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GoChiEnumerator(unittest.TestCase):
+    """Checker.route_registrations: the go-chi enumerator a joint-kind plugin can call."""
+
+    GO = ('package main\n'
+          'func registerOrders(v1 chi.Router) {\n'
+          '\tv1.Post("/orders", h)\n'
+          '}\n'
+          'func main() {\n'
+          '\tr := chi.NewRouter()\n'
+          '\tr.Route("/admin", func(a chi.Router) {\n'
+          '\t\ta.Get("/users", h)\n'
+          '\t})\n'
+          '\tr.Get(pathFromConfig, h)\n'
+          '}\n')
+
+    def test_routes_lines_offsets_and_unnamed_calls(self) -> None:
+        unnamed = []
+        routes = engine.Checker.route_registrations(
+            self.GO, {"registerOrders": "/v1"},
+            lambda verb, expr, pos, what: unnamed.append((verb, expr, what)))
+        got = {(method, path, line) for method, path, line, _ in routes}
+        self.assertEqual(got, {("POST", "/v1/orders", 3), ("GET", "/admin/users", 8)})
+        for method, path, line, offset in routes:
+            self.assertEqual(self.GO.count("\n", 0, offset) + 1, line, path)
+        self.assertEqual(unnamed, [("Get", "pathFromConfig", "the path is not a string literal")])
+
+    def test_no_callback_still_lists_the_named_routes(self) -> None:
+        # without function_prefixes the call inside registerOrders keeps its bare path
+        routes = engine.Checker.route_registrations(self.GO, {})
+        self.assertEqual({(m, p) for m, p, _, _ in routes}, {("GET", "/admin/users"), ("POST", "/orders")})

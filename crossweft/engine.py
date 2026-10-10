@@ -127,7 +127,36 @@ IDENTIFIER_KINDS = {"route", "pipe", "env", "file", "registry", "scm", "header",
                     "host", "frame", "resource"}
 # "basename": the last path segment (/ or \), so a `files` side (repository
 # paths) can be compared with a list of bare file names.
-TRANSFORMS = {"unescape-c", "lower", "strip", "csv-words", "basename"}
+# "go-http-status": a Go net/http status constant name (StatusTooManyRequests)
+# becomes its number ("429"), so a Go handler compares with numeric statuses on
+# the other side. An unknown name stays as it is and so never equals a number:
+# a guard reading it fails instead of matching. Table = Go's net/http/status.go.
+TRANSFORMS = {"unescape-c", "lower", "strip", "csv-words", "basename", "go-http-status"}
+GO_HTTP_STATUS = {
+    "StatusContinue": 100, "StatusSwitchingProtocols": 101, "StatusProcessing": 102,
+    "StatusEarlyHints": 103, "StatusOK": 200, "StatusCreated": 201, "StatusAccepted": 202,
+    "StatusNonAuthoritativeInfo": 203, "StatusNoContent": 204, "StatusResetContent": 205,
+    "StatusPartialContent": 206, "StatusMultiStatus": 207, "StatusAlreadyReported": 208,
+    "StatusIMUsed": 226, "StatusMultipleChoices": 300, "StatusMovedPermanently": 301,
+    "StatusFound": 302, "StatusSeeOther": 303, "StatusNotModified": 304, "StatusUseProxy": 305,
+    "StatusTemporaryRedirect": 307, "StatusPermanentRedirect": 308, "StatusBadRequest": 400,
+    "StatusUnauthorized": 401, "StatusPaymentRequired": 402, "StatusForbidden": 403,
+    "StatusNotFound": 404, "StatusMethodNotAllowed": 405, "StatusNotAcceptable": 406,
+    "StatusProxyAuthRequired": 407, "StatusRequestTimeout": 408, "StatusConflict": 409,
+    "StatusGone": 410, "StatusLengthRequired": 411, "StatusPreconditionFailed": 412,
+    "StatusRequestEntityTooLarge": 413, "StatusRequestURITooLong": 414,
+    "StatusUnsupportedMediaType": 415, "StatusRequestedRangeNotSatisfiable": 416,
+    "StatusExpectationFailed": 417, "StatusTeapot": 418, "StatusMisdirectedRequest": 421,
+    "StatusUnprocessableEntity": 422, "StatusLocked": 423, "StatusFailedDependency": 424,
+    "StatusTooEarly": 425, "StatusUpgradeRequired": 426, "StatusPreconditionRequired": 428,
+    "StatusTooManyRequests": 429, "StatusRequestHeaderFieldsTooLarge": 431,
+    "StatusUnavailableForLegalReasons": 451, "StatusInternalServerError": 500,
+    "StatusNotImplemented": 501, "StatusBadGateway": 502, "StatusServiceUnavailable": 503,
+    "StatusGatewayTimeout": 504, "StatusHTTPVersionNotSupported": 505,
+    "StatusVariantAlsoNegotiates": 506, "StatusInsufficientStorage": 507,
+    "StatusLoopDetected": 508, "StatusNotExtended": 510,
+    "StatusNetworkAuthenticationRequired": 511,
+}
 ROUTE_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "ANY", "MOUNT")
 ROUTE_SCANNERS = {"go-chi", "regex", "express", "fastapi", "flask", "gin", "echo"}
 AGENT_STOP_MODES = ("block", "warn")
@@ -1563,13 +1592,15 @@ def _check_value(model: Model, value: object, vtype: object, label: str) -> list
                     errors.append(f"{sub}: must be an object")
                     continue
                 unknown = set(point) - {"path", "regex", "side", "transform", "prefix",
-                                        "suffix", "note"}
+                                        "suffix", "note", "within"}
                 if unknown:
                     errors.append(f"{sub}: unknown key(s) {sorted(unknown)}")
                 problem = path_error(point.get("path"))
                 if problem:
                     errors.append(f"{sub}.path: {problem}")
                 errors += _check_regex_groups(point.get("regex"), f"{sub}.regex", minimum=1)
+                if "within" in point:
+                    errors += _check_regex_one_group(point.get("within"), f"{sub}.within")
                 for key in ("side", "prefix", "suffix", "note"):
                     if key in point and not isinstance(point[key], str):
                         errors.append(f"{sub}.{key}: must be a string")
@@ -2389,6 +2420,8 @@ class Checker:
                 value = ",".join(re.findall(r"[A-Za-z0-9_.\-]+", value))
             elif name == "basename":
                 value = re.split(r"[\\/]+", value.rstrip("/\\"))[-1]
+            elif name == "go-http-status":
+                value = str(GO_HTTP_STATUS.get(value, value))
         return value
 
     def check_joins(self) -> None:
@@ -2412,7 +2445,35 @@ class Checker:
                              f"join:{join['id']}: file missing: {rel}", fatal=True, path=rel)
                     broken = True
                     continue
-                matches = list(re.finditer(point["regex"], text, re.MULTILINE))
+                bounds = [(0, len(text))]
+                if "within" in point:
+                    # the point reads only these regions (a default block, one struct); every
+                    # match inside them still counts, so a drifted copy inside cannot hide.
+                    # The regex runs on the whole file from the region start (not on a slice,
+                    # and with no end cut), so ^, $, \b, lookbehind and lookahead see the real
+                    # text; only matches lying wholly inside a region count.
+                    bounds = [m.span(1) for m in re.finditer(point["within"], text, re.MULTILINE)
+                              if m.group(1) is not None]
+                    if not bounds:
+                        self.add(f"anchor:join:{join['id']}:within:{rel}", "anchors",
+                                 f"join:{join['id']}: the {point['side']} point's 'within' regex "
+                                 f"found no region in {rel} (no match, or its group did not take "
+                                 f"part) -- within: {point['within']}", fatal=True, path=rel)
+                        broken = True
+                        continue
+                pattern = re.compile(point["regex"], re.MULTILINE)
+                matches = []
+                for start, end in bounds:
+                    pos = start
+                    while pos < end:
+                        match = pattern.search(text, pos)
+                        if match is None or match.start() >= end:
+                            break
+                        if match.end() <= end:
+                            matches.append(match)
+                            pos = match.end() if match.end() > match.start() else match.start() + 1
+                        else:
+                            pos = match.start() + 1   # it ran past the region: a shorter match may start inside
                 if not matches:
                     # reported under joins; the key keeps its "anchor:" prefix because
                     # findings in users' repositories refer to it
@@ -2677,17 +2738,17 @@ class Checker:
                     grown = True
         return names
 
-    def go_routes(self, rel: str, function_prefixes: dict[str, str]) -> list[tuple[str, str, int]]:
-        """(METHOD, full path, line) for chi registrations in one Go file. A
-        registration on a router variable whose path (or method) is not a
-        literal is reported as `route:unscannable:...`: the scanner cannot say
-        which route it is, and silently skipping it would hide an unmapped route."""
-        text = self.text(rel)
-        if text is None:
-            self.add(f"anchor:route-scan:{rel}", "anchors", f"route router file missing: {rel}",
-                     fatal=True)
-            return []
-        pairs, spans = self.go_scan(text)
+    @classmethod
+    def route_registrations(cls, text: str, function_prefixes: dict[str, str],
+                            unscannable=None) -> list[tuple[str, str, int, int]]:
+        """(METHOD, full path, line, offset of the call) for every chi registration
+        in one Go file's text -- the one go-chi route enumerator: `check` uses it,
+        and a joint-kind plugin that needs the server's routes calls it too instead
+        of keeping a second scanner. A registration whose path (or method) is not a
+        literal cannot be named; it is passed to `unscannable(verb, expr, offset,
+        what)` when given, because silently skipping it would hide a route."""
+        newlines = [m.start() for m in re.finditer("\n", text)]
+        pairs, spans = cls.go_scan(text)
         opens = sorted(pairs)
         span_starts = [start for start, _ in spans]
         scopes: list[tuple[int, int, str]] = []
@@ -2700,13 +2761,9 @@ class Checker:
             index = bisect.bisect_right(span_starts, pos) - 1
             return index < 0 or pos >= spans[index][1]
 
-        def unscannable(verb: str, expr: str, pos: int, what: str) -> None:
-            expr = " ".join(expr.split())
-            line = self.line_at(rel, pos)
-            self.add(f"route:unscannable:{rel}:{verb} {expr}", "routes",
-                     f"{rel}:{line}: {verb}({expr}, ...) -- {what}, so the go-chi scanner cannot "
-                     "tell which route this is; write it as a literal, or record a finding with "
-                     "this key", path=rel, line=line)
+        def cannot_name(verb: str, expr: str, pos: int, what: str) -> None:
+            if unscannable is not None:
+                unscannable(verb, expr, pos, what)
 
         for match in GO_ROUTE_SCOPE_RE.finditer(text):
             if not in_code(match.start()):
@@ -2717,7 +2774,7 @@ class Checker:
                 continue   # Route(pattern, fn) with a named function: see function_prefixes
             prefix = _go_literal(expr)
             if prefix is None:
-                unscannable("Route", expr, match.start(), "the prefix is not a string literal")
+                cannot_name("Route", expr, match.start(), "the prefix is not a string literal")
                 continue
             brace = first_brace_after(body.end())
             if brace is not None:
@@ -2735,7 +2792,7 @@ class Checker:
             if brace is not None:
                 scopes.append((brace, pairs[brace], prefix))
         scopes.sort()
-        routers = self.go_router_vars(text)
+        routers = cls.go_router_vars(text)
         # calls made on a router variable or field (r.Get, s.router.With(mw).Post),
         # by the end of the match -- the same end GO_ROUTE_CALL_RE reports for that call
         on_router = {m.end() for m in GO_ROUTER_CALL_RE.finditer(text) if m.group(1) in routers}
@@ -2749,7 +2806,7 @@ class Checker:
             return text[end:end + 1] == "," and (
                 bool(re.search(r"[\"`]/", expr)) or expr.split(".")[-1].strip() in path_names)
 
-        routes: list[tuple[str, str, int]] = []
+        routes: list[tuple[str, str, int, int]] = []
         for match in GO_ROUTE_CALL_RE.finditer(text):
             pos = match.start()
             if not in_code(pos):
@@ -2765,7 +2822,7 @@ class Checker:
                 literal = _go_literal(expr)
                 if constant is None and literal is None:
                     if router:
-                        unscannable(verb, expr, pos, "the method is neither an http.Method "
+                        cannot_name(verb, expr, pos, "the method is neither an http.Method "
                                                      "constant nor a string literal")
                     continue
                 method = (constant.group(1) if constant else literal).upper()
@@ -2774,13 +2831,35 @@ class Checker:
             path = _go_literal(expr)
             if path is None:
                 if expr and (router or looks_like_route(expr, end)):
-                    unscannable(verb, expr, pos, "the path is not a string literal")
+                    cannot_name(verb, expr, pos, "the path is not a string literal")
                 continue
             if not path.startswith("/"):
                 continue               # a header or a map key, not a route pattern
             prefix = "".join(p for start, end, p in scopes if start < pos < end)
-            routes.append((method, prefix + path, self.line_at(rel, pos)))
+            routes.append((method, prefix + path, bisect.bisect_left(newlines, pos) + 1, pos))
         return routes
+
+    def go_routes(self, rel: str, function_prefixes: dict[str, str]) -> list[tuple[str, str, int]]:
+        """(METHOD, full path, line) for chi registrations in one Go file. A
+        registration on a router variable whose path (or method) is not a
+        literal is reported as `route:unscannable:...`: the scanner cannot say
+        which route it is, and silently skipping it would hide an unmapped route."""
+        text = self.text(rel)
+        if text is None:
+            self.add(f"anchor:route-scan:{rel}", "anchors", f"route router file missing: {rel}",
+                     fatal=True)
+            return []
+
+        def unscannable(verb: str, expr: str, pos: int, what: str) -> None:
+            expr = " ".join(expr.split())
+            line = self.line_at(rel, pos)
+            self.add(f"route:unscannable:{rel}:{verb} {expr}", "routes",
+                     f"{rel}:{line}: {verb}({expr}, ...) -- {what}, so the go-chi scanner cannot "
+                     "tell which route this is; write it as a literal, or record a finding with "
+                     "this key", path=rel, line=line)
+
+        return [(method, path, line) for method, path, line, _ in
+                self.route_registrations(text, function_prefixes, unscannable)]
 
     def regex_routes(self, rel: str, pattern: str, prefix: str) -> list[tuple[str, str, int]]:
         """(METHOD, full path, line) for a server whose registrations one regex
@@ -4871,7 +4950,14 @@ const char* kReport = "/v1/reports/daily";
 _SELF_TEST_HDR = '''#pragma once
 #define DEMO_PIPE L"\\\\\\\\.\\\\pipe\\\\Shop.Events"
 struct Dto { int a; };  // json: "field_a" "field_b"
+inline bool accepted(unsigned s) { return s == 200U || s == 429U; }
 '''
+
+_SELF_TEST_GO_STATUS = '''package main
+func reply(w http.ResponseWriter) { w.WriteHeader(http.StatusOK); w.WriteHeader(http.StatusTooManyRequests) }
+'''
+
+_SELF_TEST_MODELS = 'DEFAULT = {"name": "two_x"}\nALTERNATIVE = {"name": "four_x"}\n'
 
 _SELF_TEST_GO_REPORTS = '''package main
 
@@ -4964,6 +5050,10 @@ def _self_test_model() -> dict[str, dict]:
          "transform": ["csv-words"]},
         {"path": "src/app/keys.h", "side": "consumer",
          "regex": "kHead\\[\\] = \"([a-z_]+)\";\\s*constexpr char kNext\\[\\] = \"([a-z_]+)\""}]})
+    joins.append({"id": "model", "name": "Default model", "points": [
+        {"path": "tools/models.py", "side": "config", "within": "DEFAULT = \\{([^}]*)\\}",
+         "regex": "\"name\": \"([a-z_]+)\""},
+        {"path": "src/app/keys.h", "side": "client", "regex": "kModel\\[\\] = \"([a-z_]+)\""}]})
     sets = [{"id": "dto", "name": "DTO fields", "mode": "equal", "link": "app-checkout",
              "left": {"label": "C++", "paths": ["src/app/demo.h"], "regex": "\"(field_[a-z]+)\""},
              "right": {"label": "Go", "paths": ["server/dto.go"], "regex": "json:\"(field_[a-z]+)\""}},
@@ -4977,7 +5067,11 @@ def _self_test_model() -> dict[str, dict]:
              "right": {"label": "files on disk", "files": ["src/app/*.cpp", "src/app/*.h"]}},
             {"id": "header-names", "name": "Header list by bare name", "mode": "equal",
              "left": {"label": "header list", "paths": ["server/headers.json"], "regex": "\"([a-z]+\\.h)\""},
-             "right": {"label": "headers on disk", "files": ["src/app/*.h"], "transform": ["basename"]}}]
+             "right": {"label": "headers on disk", "files": ["src/app/*.h"], "transform": ["basename"]}},
+            {"id": "statuses", "name": "HTTP statuses: Go handler vs C++ client", "mode": "left-subset",
+             "left": {"label": "Go", "paths": ["server/status.go"], "regex": "http\\.(Status[A-Za-z]+)",
+                      "transform": ["go-http-status"]},
+             "right": {"label": "C++", "paths": ["src/app/demo.h"], "regex": "s == (\\d+)U"}}]
     return {"00-meta.json": {"meta": meta}, "10-main.json": {"blocks": blocks, "links": links,
             "data": data, "flows": flows, "joins": joins, "sets": sets, "pairs": [], "findings": []}}
 
@@ -5014,6 +5108,7 @@ def _write_fixture(root: Path, model: dict[str, dict], config: dict | None = Non
     files = {
         "server/main.go": _SELF_TEST_GO, "server/dto.go": _SELF_TEST_GO_DTO,
         "server/reports.go": _SELF_TEST_GO_REPORTS, "server/price.go": _SELF_TEST_PRICE_GO,
+        "server/status.go": _SELF_TEST_GO_STATUS, "tools/models.py": _SELF_TEST_MODELS,
         "src/app/client.cpp": _SELF_TEST_CPP, "src/app/demo.h": _SELF_TEST_HDR,
         "src/app/price.ts": _SELF_TEST_PRICE_TS,
         "server/manifest.json": '{"files": ["src/app/client.cpp", "src/app/demo.h"]}\n',
@@ -5021,7 +5116,8 @@ def _write_fixture(root: Path, model: dict[str, dict], config: dict | None = Non
         "tools/export.py": 'KEYS = [name for name in ("customer_id", "order_id")]\nROLES = {"a.one", "a.two"}\n',
         "src/app/keys.h": 'constexpr char kHead[] = "customer_id";\nconstexpr char kNext[] = "order_id";\n'
                           'static const std::set<std::string> kRoles{"a.one", "a.two"};\n'
-                          'static const std::set<std::string> kOther{"zzz"};\n',
+                          'static const std::set<std::string> kOther{"zzz"};\n'
+                          'constexpr char kModel[] = "two_x";\n',
         "src/app/tests/ignored.cpp": 'const char* x = "/v1/not/mapped";\n',
         "worker/app.js": _SELF_TEST_EXPRESS,
     }
@@ -5188,6 +5284,34 @@ def self_test() -> int:
                             mutate_files={"server/manifest.json": '{"files": ["src/app/client.cpp", "src/app/missing.cpp"]}\n'})
         failures += _expect("set basename transform", root, base, 1, "set:header-names:left-only:gone.h",
                             mutate_files={"server/headers.json": '{"names": ["demo.h", "keys.h", "gone.h"]}\n'})
+        failures += _expect("set go-http-status transform", root, base, 1, "set:statuses:left-only:503",
+                            mutate_files={"server/status.go": _SELF_TEST_GO_STATUS.replace(
+                                "http.StatusOK)", "http.StatusOK); w.WriteHeader(http.StatusServiceUnavailable)")})
+        failures += _expect("set go-http-status unknown name", root, base, 1,
+                            "set:statuses:left-only:StatusNoSuchThing",
+                            mutate_files={"server/status.go": _SELF_TEST_GO_STATUS.replace(
+                                "http.StatusOK)", "http.StatusOK); w.WriteHeader(http.StatusNoSuchThing)")})
+        failures += _expect("join within: drift inside the region", root, base, 1, "join:model disagrees",
+                            mutate_files={"tools/models.py": _SELF_TEST_MODELS.replace('"two_x"', '"three_x"')})
+        failures += _expect("join within: a value outside the region is not compared", root, base, 0,
+                            "RESULT: PASS",
+                            mutate_files={"tools/models.py": _SELF_TEST_MODELS.replace('"four_x"', '"eight_x"')})
+        failures += _expect("join within: a second value inside the region counts", root, base, 1,
+                            "join:model disagrees",
+                            mutate_files={"tools/models.py": _SELF_TEST_MODELS.replace(
+                                '{"name": "two_x"}', '{"name": "two_x", "name": "nine_x"}')})
+        anchored = copy.deepcopy(base)
+        anchored["10-main.json"]["joins"][-1]["points"][0]["regex"] = '^"name": "([a-z_]+)"'
+        failures += _expect("join within: ^ sees the file, not the region start", root, anchored, 1,
+                            "anchor:join:model:tools/models.py")
+        anchored["10-main.json"]["joins"][-1]["points"][0]["regex"] = '"name": "([a-z_]+)"$'
+        failures += _expect("join within: $ sees the file, not the region end", root, anchored, 1,
+                            "anchor:join:model:tools/models.py")
+        anchored["10-main.json"]["joins"][-1]["points"][0]["regex"] = '"name": "([a-z_]+)"(?=\\})'
+        failures += _expect("join within: lookahead sees past the region end", root, anchored, 0,
+                            "RESULT: PASS")
+        failures += _expect("join within: region not found", root, base, 1, "anchor:join:model:within:tools/models.py",
+                            mutate_files={"tools/models.py": 'ALTERNATIVE = {"name": "four_x"}\n'})
 
         # seams: every current link between two code blocks says how its sides agree
         undeclared = copy.deepcopy(base)

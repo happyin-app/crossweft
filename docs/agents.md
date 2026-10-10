@@ -236,7 +236,7 @@ GitHub Action (annotates the diff):
 
 ```yaml
 - uses: actions/checkout@v4
-- uses: happyin-app/crossweft@v0.2.0
+- uses: happyin-app/crossweft@<release commit>  # v0.2.1; a tag can be moved, a commit cannot
 ```
 
 pre-commit:
@@ -244,7 +244,7 @@ pre-commit:
 ```yaml
 repos:
   - repo: https://github.com/happyin-app/crossweft
-    rev: v0.2.0
+    rev: v0.2.1
     hooks:
       - id: crossweft-check
 ```

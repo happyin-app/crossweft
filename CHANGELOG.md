@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.2.1 (2026-10-10)
+
+- New transform `go-http-status`: a Go `net/http` status constant name
+  (`StatusTooManyRequests`) becomes its number (`429`), so the statuses a Go
+  handler writes can be compared with the numeric statuses a client in another
+  language accepts. The table is Go's `net/http/status.go`; an unknown name stays
+  as it is and never matches a number, so a guard reading it fails instead of
+  passing.
+- A join point takes `within` (one capture group), like a set side: the point
+  reads only those regions, e.g. the default block of a file that also documents
+  an alternative value. Every match inside the regions still counts, so a drifted
+  copy inside cannot hide. The regex runs on the whole file (not on a slice)
+  and only matches lying wholly inside a region count, so `^`, `$`,
+  lookbehind and lookahead see the real text; a
+  `within` that finds no region fails as `anchor:join:<id>:within:<path>`.
+- `engine.Checker.route_registrations(text, function_prefixes, unscannable=None)`:
+  the go-chi route enumerator `check` uses, as a side-effect-free classmethod,
+  so a joint-kind plugin that needs the server's routes reuses it instead of
+  keeping a second scanner. Registrations it cannot name go to the optional
+  callback.
+- Docs: install by the release commit in CI (tag in a comment). A tag can be
+  moved and would change what CI runs.
+
 ## 0.2.0 (2026-10-08)
 
 - `crossweft impact` on files that are on no block says so and how to map them,

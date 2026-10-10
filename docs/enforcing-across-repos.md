@@ -55,9 +55,12 @@ Two details that matter in practice:
 
 ## 3. Pin the version you trust
 
-If several repositories run Crossweft, pin one released version in all of them (install
-from a tag: `pip install "git+https://github.com/happyin-app/crossweft.git@<tag>"`), and let
-the gate treat an unknown version as "not checked". A fix one repository needs goes to
+If several repositories run Crossweft, pin one released version in all of them, and let
+the gate treat an unknown version as "not checked". In CI install it by the release
+commit, with the tag in a comment
+(`pip install "git+https://github.com/happyin-app/crossweft.git@<commit>"  # v0.2.1`):
+a tag can be moved by anyone with push access and would silently change what every
+repository runs; a commit cannot. A fix one repository needs goes to
 Crossweft first and arrives everywhere with the next release, instead of drifting into
 private copies of the engine.
 

@@ -85,11 +85,13 @@ fails again.
 ## Install
 
 ```bash
-python -m pip install "git+https://github.com/happyin-app/crossweft.git@v0.2.0"
+python -m pip install "git+https://github.com/happyin-app/crossweft.git@v0.2.1"
 ```
 
 Requires Python 3.9+ and Git. This release is distributed from GitHub; the
-installation command deliberately pins its release tag. There are no Python
+installation command deliberately pins its release tag; in CI pin the release
+commit instead (shown on the GitHub release; keep the tag in a comment), because
+a tag can be moved and would change what CI runs. There are no Python
 runtime dependencies.
 
 In a repository, `crossweft init` installs the agent harness for everyone who
@@ -152,7 +154,7 @@ writes the map, `crossweft check` keeps it honest. Then add the check to CI
 ## Five minutes on the demo
 
 ```bash
-git clone --branch v0.2.0 --depth 1 https://github.com/happyin-app/crossweft
+git clone --branch v0.2.1 --depth 1 https://github.com/happyin-app/crossweft
 cd crossweft
 python -m pip install -e .
 cd examples/polyglot-shop && crossweft check
@@ -272,7 +274,8 @@ missing. Details: [docs/agents.md](docs/agents.md).
 
 Then put it where the rest of the work happens:
 
-- **CI**: `uses: happyin-app/crossweft@v0.2.0` (annotates the diff), the
+- **CI**: `uses: happyin-app/crossweft@<release commit> # v0.2.1` (annotates the
+  diff; pin the commit like any action, a tag can be moved), the
   `crossweft-check` pre-commit hook, or `crossweft check --format github|json|sarif`
   (SARIF 2.1.0 for GitHub code scanning; recorded findings arrive as suppressed
   results). In a large repository, `crossweft check --changed HEAD` (pre-commit)
@@ -336,7 +339,7 @@ hand-written seam must declare itself and carry a guard, is what crossweft adds.
 
 ## Status
 
-`0.2.0`, alpha. The engine grew inside a commercial product that spans several
+`0.2.1`, alpha. The engine grew inside a commercial product that spans several
 languages and processes, where one-sided changes kept reaching installs; this
 is its extraction. Built by [HappyIn](https://happyin.ai).
 

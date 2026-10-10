@@ -26,6 +26,15 @@ sys.path.insert(0, str(REPO))
 
 from crossweft import cli, harness, runner  # noqa: E402
 
+def _crossweft_importable_without_pythonpath() -> bool:
+    """True when this interpreter imports crossweft from site-packages (an installed
+    copy), so a test cannot produce 'crossweft is not importable from the project'."""
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    probe = subprocess.run([sys.executable, "-c", "import crossweft"], cwd=tempfile.gettempdir(),
+                           env=env, capture_output=True)
+    return probe.returncode == 0
+
+
 CYRILLIC = "Проект"          # a non-ASCII directory name
 GREETING = "Привет"
 
@@ -150,6 +159,9 @@ class PluginDefersOnlyToHooksThatRun(DemoCase):
         self.assertEqual(out["decision"], "block")
 
     @unittest.skipUnless(SHELL, "no shell to run the hook command in")
+    @unittest.skipIf(_crossweft_importable_without_pythonpath(),
+                     "crossweft is installed for this interpreter, so 'not importable from the "
+                     "project' cannot be produced here")
     def test_python_module_launcher_needs_an_importable_module(self) -> None:
         launcher = f'"{Path(sys.executable).as_posix()}" -m crossweft'
         self.assertEqual(self.agents("--command", launcher)[0], 0)
@@ -164,6 +176,9 @@ class PluginDefersOnlyToHooksThatRun(DemoCase):
                                           "CLAUDE_PROJECT_DIR": str(self.root)}):
             self.assertEqual(self.hook("stop", "--from-plugin")[:2], (0, None))
 
+    @unittest.skipIf(_crossweft_importable_without_pythonpath(),
+                     "crossweft is installed for this interpreter: a regular package in "
+                     "site-packages wins over the project's namespace directory")
     def test_a_namespace_package_is_not_a_runnable_module(self) -> None:
         launcher = f'"{Path(sys.executable).as_posix()}" -m crossweft'
         self.assertEqual(self.agents("--command", launcher)[0], 0)

@@ -125,7 +125,15 @@ used free labels and all 6 block-id sides named the file's own block.
 Each point's regex is applied to its file; **every** match counts, so a second,
 drifted definition on one side is caught too. Capture groups are joined with
 `,`. Optional per point: `transform` (`unescape-c`, `lower`, `strip`,
-`csv-words`, `basename` -- the last path segment), `prefix`, `suffix`, `note`.
+`csv-words`, `basename` -- the last path segment, `go-http-status` -- a Go
+`net/http` constant name such as `StatusTooManyRequests` becomes `429`; an
+unknown name stays as it is and so never matches a number), `prefix`,
+`suffix`, `note`, and `within` -- a regex with one capture group that narrows
+the file to regions first (the default block when the file also documents an
+alternative value). Every match lying wholly inside a region counts, and the
+regex runs on the whole file, so `^`, `$`, `\b`, lookbehind and lookahead see
+the real text around a region; a `within` that finds no region is a problem
+`anchor:join:<id>:within:<path>`.
 
 ### `sets` -- members must match
 
@@ -353,6 +361,10 @@ def generated(root, entries): ...       # optional: {repo-relative path: text} t
 IMPACT_GLOBS = ["src/**/*.cmake"]       # optional: files that feed the kind
 def impact(entries, changed): ...       # optional: [{"ref", "message", "other": [paths]}]
 ```
+
+A plugin that needs the routes a Go server registers calls
+`crossweft.engine.Checker.route_registrations(text, function_prefixes)` -- the
+same go-chi enumerator `check` uses, returning `(method, path, line, offset)`.
 
 `meta.joint_kinds` pins the kinds a model must carry. A pinned kind with no
 entries (its model file was deleted) or no plugin (the plugin was deleted or
