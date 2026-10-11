@@ -74,6 +74,7 @@ import tempfile
 from pathlib import Path, PurePosixPath
 
 from . import harness, i18n, joints
+from .scope import scope_hit
 
 SCHEMA_ID = "crossweft.map.v1"
 CONFIG_FILE = "crossweft.json"
@@ -1062,6 +1063,7 @@ class Config:
     validator_timeouts: dict = dataclasses.field(default_factory=dict)
     discover_exclude: list = dataclasses.field(default_factory=list)
     joints_dir: Path | None = None
+    joints_sources: list = dataclasses.field(default_factory=list)
 
     def abs(self, rel: Path) -> Path:
         return self.root / rel
@@ -1188,11 +1190,19 @@ def load_config(root: Path) -> Config:
         if not isinstance(exclude, list) or not all(isinstance(e, str) and e for e in exclude):
             raise ModelError(f"{CONFIG_FILE}: discover.exclude must be a list of globs")
         cfg.discover_exclude = list(exclude)
-    joint_cfg = sub_object("joints", {"dir"})
+    joint_cfg = sub_object("joints", {"dir", "sources"})
     if joint_cfg:
         if "dir" not in joint_cfg:
             raise ModelError(f"{CONFIG_FILE}: joints needs 'dir'")
         cfg.joints_dir = rel_path("joints.dir", joint_cfg["dir"])
+        if "sources" in joint_cfg:
+            sources = joint_cfg["sources"]
+            if not isinstance(sources, list) or not sources or not all(
+                    isinstance(s, str) and s and not s.startswith(("/", "\\")) and ".." not in s.split("/")
+                    for s in sources):
+                raise ModelError(f"{CONFIG_FILE}: joints.sources must be a non-empty list of "
+                                 "repository-relative globs")
+            cfg.joints_sources = list(sources)
     return cfg
 
 
@@ -1215,7 +1225,8 @@ class Model:
         self.errors: list[str] = []
         # joint-kind plugins (crossweft/joints.py) and the entries of their sections
         self.plugins, self.plugin_errors = joints.load(
-            cfg.root, cfg.joints_dir, RESERVED_JOINT_KINDS, set(GENERATED_FILES))
+            cfg.root, cfg.joints_dir, RESERVED_JOINT_KINDS, set(GENERATED_FILES),
+            cfg.joints_sources or None)
         self.sections: dict[str, list] = {plugin.kind: [] for plugin in self.plugins}
 
     # convenient accessors
@@ -3451,7 +3462,8 @@ class CheckResult:
         return rows
 
 
-def evaluate(cfg: Config, changed: str | None = None) -> CheckResult:
+def evaluate(cfg: Config, changed: str | None = None,
+             also_changed: list[str] | None = None) -> CheckResult:
     """Run every check against the code and return the result, printing nothing.
     With `changed` (a git revision), run only the guards that read a file
     changed since it (see change_scope) -- or the full check when the change set
@@ -3464,7 +3476,7 @@ def evaluate(cfg: Config, changed: str | None = None) -> CheckResult:
         return result
     scope: list[str] | None = None
     if changed is not None:
-        scope, fallback = change_scope(cfg, changed)
+        scope, fallback = change_scope(cfg, changed, also_changed or ())
         result.changed = {"rev": changed, "files": len(scope or []), "guards_run": 0,
                           "guards_total": 0, "unverified": [], "fallback": fallback}
     result.counts = {k: len(v) for k, v in model.entities.items()}
@@ -3745,7 +3757,112 @@ def _changed_only(result: CheckResult) -> dict | None:
     return result.changed
 
 
-def run_check(cfg: Config, fmt: str = "text", changed: str | None = None) -> int:
+PASS_RECORD = "crossweft-last-pass.json"
+
+
+def _pass_record_path(cfg: Config) -> Path | None:
+    """Where the last fully verified commit is kept: inside the git directory of
+    this work tree, so it is never committed and every worktree has its own."""
+    try:
+        found = _git_lines(cfg.root, "rev-parse", "--git-path", PASS_RECORD)
+    except ImpactError:
+        return None
+    if not found:
+        return None
+    path = Path(found[0])
+    return path if path.is_absolute() else cfg.root / path
+
+
+def _engine_digest() -> str:
+    """The crossweft code that checked, not just its version number: a record made
+    by an edited checkout of the same version must not be trusted."""
+    digest = hashlib.sha256()
+    for path in sorted(Path(__file__).resolve().parent.glob("*.py")):
+        digest.update(path.name.encode() + b"\0" + path.read_bytes() + b"\0")
+    return digest.hexdigest()
+
+
+def _pass_snapshot(cfg: Config) -> tuple[str, list[str], str] | None:
+    """HEAD, the uncommitted paths and the engine digest, read BEFORE the check
+    runs: a commit, an edit or an engine change that lands while it runs is then
+    never recorded as verified."""
+    try:
+        head = _git_lines(cfg.root, "rev-parse", "HEAD")
+        dirty = set(_git_paths(cfg.root, "diff", "--name-only", "--relative", "--no-renames", "HEAD"))
+        dirty.update(_git_paths(cfg.root, "ls-files", "--others", "--exclude-standard"))
+    except ImpactError:
+        return None
+    return (head[0], sorted(dirty), _engine_digest()) if head else None
+
+
+def incremental_base(cfg: Config) -> tuple[str | None, list[str], str]:
+    """(commit, dirty, why): the last commit at which the map passed with this
+    crossweft version and the paths that were uncommitted then (they rerun), or
+    (None, [], why the full check must run)."""
+    from . import __version__
+    path = _pass_record_path(cfg)
+    if path is None:
+        return None, [], "not a git work tree"
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None, [], "no passing check recorded yet"
+    except (OSError, ValueError) as exc:
+        return None, [], f"the pass record is unreadable ({exc})"
+    commit = record.get("commit") if isinstance(record, dict) else None
+    dirty = record.get("dirty", []) if isinstance(record, dict) else []
+    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        return None, [], "the pass record names no commit"
+    if not isinstance(dirty, list) or not all(isinstance(d, str) for d in dirty):
+        return None, [], "the pass record's dirty paths are malformed"
+    if record.get("version") != __version__:
+        return None, [], f"the last pass was checked by crossweft {record.get('version')}"
+    if record.get("engine") != _engine_digest():
+        return None, [], "the last pass was checked by a different build of crossweft"
+    try:
+        if not _git_lines(cfg.root, "rev-parse", "--verify", "--quiet", commit + "^{commit}"):
+            return None, [], f"{commit[:12]} is gone"
+    except ImpactError:
+        return None, [], f"{commit[:12]} is gone"
+    return commit, dirty, ""
+
+
+def record_pass(cfg: Config, result: CheckResult,
+                snapshot: tuple[str, list[str], str] | None) -> None:
+    """After a passing check, remember HEAD as verified, with the paths that were
+    uncommitted: the next incremental check reruns every guard reading one of
+    them, so reverting an uncommitted file cannot bring back bytes nobody
+    checked. A --changed pass counts: every guard that reads a changed path ran
+    and the rest read the same bytes as at the verified base."""
+    from . import __version__
+    if not result.ok or result.nothing_scanned:
+        return
+    path = _pass_record_path(cfg)
+    if path is None or snapshot is None:
+        return
+    head, dirty, engine_digest = snapshot
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"commit": head, "version": __version__,
+                                   "engine": engine_digest, "dirty": dirty}), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def evaluate_incremental(cfg: Config) -> tuple[CheckResult, str | None, str]:
+    """`check --incremental`: --changed against the last verified commit, else the
+    full check; a pass on a clean tree moves the verified commit forward."""
+    base, dirty, why = incremental_base(cfg)
+    snapshot = _pass_snapshot(cfg)
+    result = evaluate(cfg, changed=base, also_changed=dirty) if base else evaluate(cfg)
+    record_pass(cfg, result, snapshot)
+    return result, base, why
+
+
+def run_check(cfg: Config, fmt: str = "text", changed: str | None = None,
+              incremental: bool = False) -> int:
     """`crossweft check`. Exit 0 = consistent, 1 = problems, 2 = no verdict: the
     model or config could not be read, or nothing was scanned (never a pass)."""
     if changed is not None and fmt == "sarif":
@@ -3757,13 +3874,26 @@ def run_check(cfg: Config, fmt: str = "text", changed: str | None = None) -> int
                          "scanning would close the alerts of every guard it skipped -- "
                          "upload a full check\n")
         return 2
+    if incremental and fmt == "sarif":
+        sys.stderr.write("[ERR] --incremental cannot be combined with --format sarif: it may "
+                         "run part of the guards -- upload a full check\n")
+        return 2
+
+    def run() -> CheckResult:
+        if not incremental:
+            return evaluate(cfg, changed)
+        result, base, why = evaluate_incremental(cfg)
+        result.info.insert(0, f"incremental: changes since the last verified commit {base[:12]}"
+                           if base else f"incremental: full check ({why})")
+        return result
+
     if fmt in ("json", "sarif"):
         # a machine format owns stdout: anything else printed while checking (a
         # joint plugin's print) goes to stderr instead of corrupting the document
         with contextlib.redirect_stdout(sys.stderr):
-            result = evaluate(cfg, changed)
+            result = run()
     else:
-        result = evaluate(cfg, changed)
+        result = run()
     print_result(cfg, result, fmt)
     if result.load_error or result.schema_errors:
         return 2
@@ -4598,7 +4728,7 @@ def changed_files(root: Path, base: str | None) -> tuple[list[str], str]:
     return sorted(files), label
 
 
-def change_scope(cfg: Config, rev: str) -> tuple[list[str] | None, str | None]:
+def change_scope(cfg: Config, rev: str, also: tuple | list = ()) -> tuple[list[str] | None, str | None]:
     """`check --changed REV`: (paths whose guards must run, None), or (None, why)
     when the change set cannot be trusted and the full check must run instead.
 
@@ -4623,11 +4753,15 @@ def change_scope(cfg: Config, rev: str) -> tuple[list[str] | None, str | None]:
         paths.update(_git_paths(root, "ls-files", "--others", "--exclude-standard"))
         paths.update(p.rstrip("/") for p in _git_paths(root, "ls-files", "--others", "--ignored",
                                                        "--exclude-standard", "--directory"))
+        paths.update(also)   # paths the caller knows must rerun (see record_pass)
     except ImpactError as exc:
         return None, f"the changes since {rev} could not be listed ({exc})"
     control = [(CONFIG_FILE, CONFIG_FILE), (cfg.model_dir.as_posix(), "the model"),
                (cfg.lock_file.as_posix(), "the pair lock file")]
-    if cfg.joints_dir:
+    if cfg.joints_dir and cfg.joints_sources:
+        # the plugins and their helpers only (load() refuses an incomplete list)
+        control += [(glob, "a joint plugin or its helper") for glob in cfg.joints_sources]
+    elif cfg.joints_dir:
         control.append((cfg.joints_dir.as_posix(), "a joint plugin"))
     for target, what in control:
         hit = sorted(p for p in paths if _scope_hit(p, target))
@@ -4636,26 +4770,7 @@ def change_scope(cfg: Config, rev: str) -> tuple[list[str] | None, str | None]:
     return sorted(paths), None
 
 
-def _scope_hit(changed: str, target: str) -> bool:
-    """Whether a guard target (file, directory or glob) may read the changed
-    path. Errs towards True, never False: compared case-insensitively (a
-    case-insensitive file system globs `Web/a.ts` for `web/*.ts`), and a glob
-    is matched part by part, so a changed directory hits a glob that can reach
-    into it, and `**` reaches anything below."""
-    changed, target = changed.rstrip("/").casefold(), target.rstrip("/").casefold()
-    if changed == target or changed.startswith(target + "/") or target.startswith(changed + "/"):
-        return True
-    if not any(ch in target for ch in "*?["):
-        return False
-    parts, pattern = changed.split("/"), target.split("/")
-    for index, part in enumerate(parts):
-        if index >= len(pattern):
-            return False            # deeper than the glob reaches
-        if pattern[index] == "**":
-            return True
-        if not fnmatch.fnmatchcase(part, pattern[index]):
-            return False
-    return True                     # the path, or a directory the glob reaches into
+_scope_hit = scope_hit   # crossweft/scope.py
 
 
 def _normalize_paths(root: Path, paths: list[str]) -> list[str]:

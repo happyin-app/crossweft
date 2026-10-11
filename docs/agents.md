@@ -6,7 +6,14 @@ Three moments matter, whatever the agent:
 |---|---|---|
 | session start | `crossweft hook <agent> session-start` | one paragraph: this repository declares its seams, how many, and the rules |
 | after an edit | `crossweft hook <agent> post-edit` | for each seam the edited file sits on: the file on the **other** side to re-read, the guard that compares them, and -- if a guard already disagrees -- the disagreement |
-| before "done" | `crossweft hook <agent> stop` | if `crossweft check` fails, the agent is sent back with the reasons |
+| before "done" | `crossweft hook <agent> stop` | if `crossweft check --incremental` fails, the agent is sent back with the reasons |
+
+The stop hook checks only what changed since the last commit at which the map
+passed in this work tree (`check --incremental`), so a stop on a large
+repository costs the changed guards, not the whole map; the first stop, an
+upgrade of the tool, or a change to the map, the config or a joint plugin runs
+the full check. Measured on a 1,140-file map with 13 joint kinds: full check
+385 s, a stop after editing one source file 38 s.
 
 The stop hook can request a follow-up while the agent makes progress (the set
 of failing keys changes), at most four times in a row. It is not an
@@ -236,7 +243,7 @@ GitHub Action (annotates the diff):
 
 ```yaml
 - uses: actions/checkout@v4
-- uses: happyin-app/crossweft@<release commit>  # v0.2.1; a tag can be moved, a commit cannot
+- uses: happyin-app/crossweft@<release commit>  # v0.2.2; a tag can be moved, a commit cannot
 ```
 
 pre-commit:
@@ -244,7 +251,7 @@ pre-commit:
 ```yaml
 repos:
   - repo: https://github.com/happyin-app/crossweft
-    rev: v0.2.1
+    rev: v0.2.2
     hooks:
       - id: crossweft-check
 ```

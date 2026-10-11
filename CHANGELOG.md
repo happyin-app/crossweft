@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.2.2 (2026-10-11)
+
+- `check --incremental`: `--changed` against the last commit at which the check
+  passed in this work tree, plus the paths that were uncommitted then (they
+  rerun, so reverting an uncommitted file cannot bring back unchecked bytes);
+  the full check when there is no such commit, another crossweft version or
+  build recorded it (the record keeps a digest of the engine code), or the map,
+  config or a joint plugin changed. HEAD and the uncommitted paths are read
+  before the check runs, so a commit landing meanwhile is never recorded. A pass moves the
+  commit forward. The record lives in the git directory (per worktree, never
+  committed). Exclusive with `--changed`; refused with `--format sarif`.
+- The stop hook runs `check --incremental`. Measured on a 1,140-file map with
+  13 joint kinds: full check 385 s; a stop after editing one source file 38 s.
+- `joints.sources` in `crossweft.json`: the plugin files and the helpers they
+  import, for a `joints.dir` that also holds unrelated code. `--changed` then
+  falls back to the full check only when one of those files changes (before:
+  any change under `joints.dir`). A plugin that imports a helper from its
+  directory, or reads a file from it while imported or checked, that neither
+  `sources` nor the kind's inputs cover is an error
+  (`joints:unlisted-read:<kind>:<path>`), so the list cannot go stale silently.
+  Globs match the way `--changed` matches them, part by part.
+
 ## 0.2.1 (2026-10-10)
 
 - New transform `go-http-status`: a Go `net/http` status constant name

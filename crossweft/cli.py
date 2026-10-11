@@ -143,6 +143,11 @@ def build_parser() -> argparse.ArgumentParser:
                             "staged, unstaged or untracked); the full check runs instead when "
                             "the map, the lock, a joint plugin or the change set itself changed "
                             "or cannot be read. Output says `changed-only: N of M guards`")
+    check.add_argument("--incremental", action="store_true",
+                       help="--changed against the last commit at which the check passed on a "
+                            "clean work tree (kept in the git directory), else the full check; "
+                            "a pass on a clean tree moves that commit forward. For hooks and "
+                            "pre-commit on large repositories; a release still runs `check`")
 
     render = sub.add_parser("render", help="write the generated docs and viewer",
         description="Write the generated Markdown pages and viewer.html into output_dir.",
@@ -311,7 +316,12 @@ def main(argv: list[str] | None = None) -> int:
             engine.out(f"[ERR] {exc}")
         return 2
     if command == "check":
-        return engine.run_check(cfg, "json" if args.json else args.format, args.changed)
+        if args.incremental and args.changed:
+            engine.out("[ERR] --incremental and --changed are exclusive: --incremental picks "
+                       "the revision itself")
+            return 2
+        return engine.run_check(cfg, "json" if args.json else args.format, args.changed,
+                                incremental=args.incremental)
     if command == "render":
         return engine.run_render(cfg, check_only=args.check)
     if command == "show":

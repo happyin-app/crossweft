@@ -52,11 +52,13 @@ The last lines are `RESULT: PASS|FAIL|ERROR` and `SCANNED: ...`.
 |---|---|
 | `--format text\|json\|github\|sarif` | output: text (default), JSON, GitHub annotations, or SARIF 2.1.0 for code scanning (recorded findings arrive as suppressed results) |
 | `--json` | same as `--format json` |
-| `--changed REV` | run only the guards that read a file changed since REV; falls back to the full check when the map, lock, config or a joint plugin changed. For pre-commit, not for CI or the agent's stop -- see [agents.md](agents.md#large-repositories-check---changed) |
+| `--changed REV` | run only the guards that read a file changed since REV; falls back to the full check when the map, lock, config or a joint plugin changed. For pre-commit, not for CI -- see [agents.md](agents.md#large-repositories-check---changed) |
+| `--incremental` | `--changed` against the last commit at which the check passed in this work tree (kept in the git directory, with the paths that were uncommitted then, which rerun), or the full check when there is none or another crossweft version or build recorded it. A pass moves that commit forward. The stop hook runs this; CI and releases run plain `check` |
 
 ```bash
 crossweft check --format github
 crossweft check --changed HEAD
+crossweft check --incremental
 ```
 
 ## `crossweft impact`

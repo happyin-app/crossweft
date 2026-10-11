@@ -46,12 +46,15 @@ self-test` runs each plugin's self_test().
 from __future__ import annotations
 
 import dataclasses
+import os
 import importlib.util
 import re
 import sys
 from pathlib import Path
 from types import ModuleType
 from typing import Iterable
+
+from .scope import scope_hit
 
 PREFIX = "joints_"
 KIND_RE = re.compile(r"[a-z][a-z0-9_]*\Z")
@@ -88,11 +91,13 @@ def _inside(candidate: object, directory: Path) -> bool:
     return True
 
 
-def _drop_plugin_modules(before: set[str], directory: Path, keep: str) -> None:
+def _drop_plugin_modules(before: set[str], directory: Path, keep: str) -> list[Path]:
     """Forget every module a plugin's import added from its own directory, so a
     helper there (a csv.py, say) can never stand in for a module the host has
-    not imported yet. The plugin module itself stays, under its private name."""
+    not imported yet. The plugin module itself stays, under its private name.
+    Returns the files of the modules it dropped (the plugin's helpers)."""
     directory = directory.resolve()
+    helpers: list[Path] = []
     for name in set(sys.modules) - before:
         if name == keep:
             continue
@@ -101,9 +106,12 @@ def _drop_plugin_modules(before: set[str], directory: Path, keep: str) -> None:
         paths = list(getattr(module, "__path__", None) or [])
         if (location and _inside(location, directory)) or any(_inside(p, directory) for p in paths):
             sys.modules.pop(name, None)
+            if location:
+                helpers.append(Path(location).resolve())
+    return helpers
 
 
-def _import(path: Path, kind: str) -> ModuleType:
+def _import(path: Path, kind: str, helpers: list[Path] | None = None) -> ModuleType:
     """Import one plugin file under a private module name. Its directory is on
     sys.path only while it executes, so it can import its own helpers; the
     modules it added from that directory are dropped afterwards (even when the
@@ -133,13 +141,75 @@ def _import(path: Path, kind: str) -> ModuleType:
             pass
         if failed:
             sys.modules.pop(name, None)
-        _drop_plugin_modules(before, path.parent, name)
+        dropped = _drop_plugin_modules(before, path.parent, name)
+        if helpers is not None:
+            helpers.extend(dropped)
     return module
 
 
+def _covered(rel: str, sources: list[str]) -> bool:
+    # the matcher `check --changed` uses: a file this accepts is one a change reruns for
+    return any(scope_hit(rel, glob) for glob in sources)
+
+
+# Files a plugin opens while it is imported or checked (an audit hook; Python 3.8+).
+# With joints.sources, a file read from joints.dir that neither the sources nor the
+# kind's own inputs list is an error: `check --changed` would not rerun the map
+# when it changes.
+_READS: list[str] | None = None
+_HOOKED = False
+
+
+def _audit(event: str, args: tuple) -> None:
+    if _READS is not None and event == "open" and args and isinstance(args[0], (str, bytes, os.PathLike)):
+        _READS.append(os.fsdecode(args[0]))
+
+
+def _start_reads() -> None:
+    global _READS, _HOOKED
+    if not _HOOKED:
+        sys.addaudithook(_audit)
+        _HOOKED = True
+    _READS = []
+
+
+def _stop_reads() -> list[str]:
+    global _READS
+    reads, _READS = _READS or [], None
+    return reads
+
+
+def unlisted_reads(root: Path, directory: Path, sources: list[str], refs: set[str],
+                   reads: list[str]) -> list[str]:
+    """Files under joints.dir among `reads` that neither `sources` nor `refs` (the
+    kind's inputs) cover, as repository-relative paths."""
+    base = (root / directory).resolve()
+    resolved_root = root.resolve()
+    out: list[str] = []
+    for raw in reads:
+        try:
+            path = Path(raw)
+            path = (path if path.is_absolute() else Path.cwd() / path).resolve()
+            if not path.is_file() or not _inside(path, base):
+                continue
+            if path.suffix == ".pyc" or "__pycache__" in path.parts:
+                continue        # bytecode the import system reads, not the plugin's input
+            rel = path.relative_to(resolved_root).as_posix()
+        except (OSError, ValueError):
+            continue
+        if not _covered(rel, sources) and not any(scope_hit(rel, ref) for ref in refs):
+            out.append(rel)
+    return sorted(set(out))
+
+
 def load(root: Path, directory: Path | None, reserved: set[str],
-         reserved_pages: set[str]) -> tuple[list[Plugin], list[str]]:
-    """Plugins from `directory` (repo-relative), and every problem found."""
+         reserved_pages: set[str], sources: list[str] | None = None
+         ) -> tuple[list[Plugin], list[str]]:
+    """Plugins from `directory` (repo-relative), and every problem found. With
+    `sources` (joints.sources), every plugin file and every helper module a plugin
+    imports from its directory must be listed there: `check --changed` reruns
+    the whole map only when one of those files changes, so a missing entry would
+    let a changed helper go unchecked."""
     if directory is None:
         return [], []
     base = root / directory
@@ -157,13 +227,18 @@ def load(root: Path, directory: Path | None, reserved: set[str],
         if kind in reserved:
             errors.append(f"{label}: '{kind}' is a crossweft model key -- rename the plugin")
             continue
+        helpers: list[Path] = []
+        if sources:
+            _start_reads()
         try:
-            module = _import(path, kind)
+            module = _import(path, kind, helpers)
         except KeyboardInterrupt:
             raise
         except BaseException as exc:  # noqa: BLE001 -- a broken plugin (even sys.exit()) fails the map, loudly
             errors.append(f"{label} failed to import: {_describe(exc)}")
             continue
+        finally:
+            import_reads = _stop_reads() if sources else []
         missing = [name for name in REQUIRED if not hasattr(module, name)]
         if missing:
             errors.append(f"{label} lacks {', '.join(missing)}")
@@ -185,6 +260,21 @@ def load(root: Path, directory: Path | None, reserved: set[str],
                 errors.append(f"{label}: PAGE {page} is already generated by {owner}")
                 continue
             pages[page] = kind
+        if sources:
+            resolved_root = root.resolve()
+            for file in [path.resolve(), *helpers]:
+                try:
+                    rel = file.relative_to(resolved_root).as_posix()
+                except ValueError:
+                    continue
+                if not _covered(rel, sources):
+                    errors.append(f"{label}: {rel} is a plugin file or a helper it imports, but "
+                                  "joints.sources does not list it -- add it, or a change to it "
+                                  "would not rerun the check under --changed")
+            for rel in unlisted_reads(root, directory, sources, set(), import_reads):
+                errors.append(f"{label}: reads {rel} while it is imported, but joints.sources "
+                              "does not list it -- add it, or a change to it would not rerun "
+                              "the check under --changed")
         plugins.append(Plugin(kind, path, module))
     return plugins, errors
 
@@ -218,12 +308,26 @@ def run_check(plugin: Plugin, root: Path, entries: list, model: object) -> Outco
         return Outcome([(f"joints:broken:{kind}", f"joint kind '{kind}': {reason} -- nothing of "
                          "it was verified", True)], set(), 0, "")
 
+    cfg = getattr(model, "cfg", None)
+    sources = list(getattr(cfg, "joints_sources", None) or [])
+    if sources:
+        _start_reads()
     try:
         result = plugin.module.check(root, entries, model)
     except KeyboardInterrupt:
         raise
     except BaseException as exc:  # noqa: BLE001
         return broken(f"check crashed ({_describe(exc)})")
+    finally:
+        reads = _stop_reads() if sources else []
+    unlisted = (unlisted_reads(root, cfg.joints_dir, sources, references(plugin, entries), reads)
+                if sources and cfg.joints_dir is not None else [])
+    if unlisted:
+        return Outcome([(f"joints:unlisted-read:{kind}:{rel}",
+                         f"joint kind '{kind}' read {rel} from joints.dir, but neither "
+                         "joints.sources nor the kind's inputs list it -- add it to "
+                         "joints.sources, or --changed would not rerun the map when it changes",
+                         True) for rel in unlisted], set(), 0, "")
     if not isinstance(result, dict):
         return broken("check must return a dict")
     raw = result.get("problems", [])

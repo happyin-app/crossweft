@@ -401,3 +401,214 @@ class ScopeHit(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(shutil.which("git"), "git is not installed")
+class Incremental(GitRepo):
+    """check --incremental: --changed against the last commit at which the check
+    passed in this work tree, with the paths that were uncommitted then."""
+
+    def setUp(self) -> None:
+        self.make_repo(MODEL, FILES)
+
+    def record(self) -> dict:
+        path = engine._pass_record_path(engine.load_config(self.root))
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def test_first_run_is_full_then_only_the_changes_run(self) -> None:
+        code, output = self.check("--incremental")
+        self.assertEqual(code, 0, output)
+        self.assertIn("incremental: full check (no passing check recorded yet)", output)
+        self.write("web/api.ts", 'export const VERSION = "1"; // touched\n')
+        code, output = self.check("--incremental")
+        self.assertEqual(code, 0, output)
+        self.assertIn("incremental: changes since the last verified commit", output)
+        self.assertIn("(changed-only:", output)
+
+    def test_drift_after_a_pass_is_caught(self) -> None:
+        self.assertEqual(self.check("--incremental")[0], 0)
+        self.write("server/jobs.go", 'package main\nconst Version = "9"\n')
+        code, output = self.check("--incremental")
+        self.assertEqual(code, 1, output)
+        self.assertIn("join:worker-version disagrees", output)
+
+    def test_reverting_an_uncommitted_file_reruns_its_guards(self) -> None:
+        # committed drift that only the uncommitted fix hides
+        self.write("worker/job.py", 'VERSION = "8"\n')
+        self.commit()
+        self.write("worker/job.py", 'VERSION = "7"\n')      # uncommitted fix: passes
+        self.assertEqual(self.check("--incremental")[0], 0)
+        self.assertEqual(self.record()["dirty"], ["worker/job.py"])
+        git(self.root, "checkout", "--", "worker/job.py")   # back to the committed drift
+        code, output = self.check("--incremental")
+        self.assertEqual(code, 1, output)
+        self.assertIn("join:worker-version disagrees", output)
+
+    def test_a_failing_run_does_not_move_the_base(self) -> None:
+        self.assertEqual(self.check("--incremental")[0], 0)
+        base = self.record()["commit"]
+        self.write("server/main.go", 'package main\nconst Version = "2"\n')
+        self.commit()
+        self.assertEqual(self.check("--incremental")[0], 1)
+        self.assertEqual(self.record()["commit"], base)
+
+    def test_another_crossweft_version_runs_the_full_check(self) -> None:
+        self.assertEqual(self.check("--incremental")[0], 0)
+        path = engine._pass_record_path(engine.load_config(self.root))
+        record = self.record()
+        record["version"] = "0.0.1"
+        path.write_text(json.dumps(record), encoding="utf-8")
+        code, output = self.check("--incremental")
+        self.assertEqual(code, 0, output)
+        self.assertIn("incremental: full check (the last pass was checked by crossweft 0.0.1)",
+                      output)
+
+    def test_incremental_and_changed_are_exclusive_and_sarif_is_refused(self) -> None:
+        self.assertEqual(self.check("--incremental", "--changed", "HEAD")[0], 2)
+        self.assertEqual(self.check("--incremental", "--format", "sarif")[0], 2)
+
+
+@unittest.skipUnless(shutil.which("git"), "git is not installed")
+class JointSources(GitRepo):
+    """joints.sources narrows the 'a joint plugin changed' fallback to the plugin
+    files and their helpers, and refuses a list that misses a helper."""
+
+    meta = {**META, "joint_kinds": ["demo"]}
+    PLUGIN = ('import helper\nSECTION = "demo"\n'
+              'def validate(entries):\n    return []\n'
+              'def check(root, entries, model):\n'
+              '    return {"problems": [], "items": len(entries), "files": [], "info": helper.X}\n'
+              'def self_test():\n    return 0\n')
+
+    def setUp(self) -> None:
+        self.make_repo({**MODEL, "demo": [{"id": "one"}]}, {
+            **FILES, "tools/joints_demo.py": self.PLUGIN, "tools/helper.py": 'X = "ok"\n',
+            "tools/unrelated.py": "print(1)\n"})
+
+    def configure(self, sources: list[str]) -> None:
+        self.write("crossweft.json", json.dumps({"joints": {"dir": "tools", "sources": sources}}))
+        self.commit()
+
+    def test_an_unrelated_file_in_the_plugin_dir_does_not_run_the_full_check(self) -> None:
+        self.configure(["tools/joints_*.py", "tools/helper.py"])
+        self.write("tools/unrelated.py", "print(2)\n")
+        code, output = self.check("--changed", "HEAD")
+        self.assertEqual(code, 0, output)
+        self.assertIn("(changed-only:", output)
+
+    def test_a_changed_helper_runs_the_full_check(self) -> None:
+        self.configure(["tools/joints_*.py", "tools/helper.py"])
+        self.write("tools/helper.py", 'X = "changed"\n')
+        code, output = self.check("--changed", "HEAD")
+        self.assertEqual(code, 0, output)
+        self.assertIn("(full check; --changed fell back)", output)
+
+    def test_a_helper_missing_from_sources_is_an_error(self) -> None:
+        self.configure(["tools/joints_*.py"])
+        code, output = self.check()
+        self.assertEqual(code, 2, output)
+        self.assertIn("tools/helper.py is a plugin file or a helper it imports", output)
+
+
+@unittest.skipUnless(shutil.which("git"), "git is not installed")
+class IncrementalReviewHoles(GitRepo):
+    """Cases from the independent review: each produced a PASS a full check fails."""
+
+    def setUp(self) -> None:
+        self.make_repo(MODEL, FILES)
+
+    def test_a_commit_landing_during_the_check_is_not_recorded_as_verified(self) -> None:
+        from unittest import mock
+        real = engine.evaluate
+
+        def commit_drift_meanwhile(*args, **kwargs):
+            result = real(*args, **kwargs)                       # checked the old bytes
+            self.write("worker/job.py", 'VERSION = "8"\n')       # drift committed meanwhile
+            self.commit()
+            return result
+
+        with mock.patch.object(engine, "evaluate", side_effect=commit_drift_meanwhile):
+            self.assertEqual(self.check("--incremental")[0], 0)
+        code, output = self.check("--incremental")
+        self.assertEqual(code, 1, output)
+        self.assertIn("join:worker-version disagrees", output)
+
+    def test_an_edited_crossweft_of_the_same_version_runs_the_full_check(self) -> None:
+        self.assertEqual(self.check("--incremental")[0], 0)
+        path = engine._pass_record_path(engine.load_config(self.root))
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record["engine"] = "0" * 64
+        path.write_text(json.dumps(record), encoding="utf-8")
+        code, output = self.check("--incremental")
+        self.assertEqual(code, 0, output)
+        self.assertIn("a different build of crossweft", output)
+
+
+@unittest.skipUnless(shutil.which("git"), "git is not installed")
+class JointSourcesReviewHoles(GitRepo):
+    meta = {**META, "joint_kinds": ["demo"]}
+
+    def plugin(self, body: str) -> str:
+        return (f'{body}\nSECTION = "demo"\n'
+                'def validate(entries):\n    return []\n'
+                'def self_test():\n    return 0\n')
+
+    def test_a_glob_that_change_detection_cannot_reach_is_refused(self) -> None:
+        # "tools/*.py" does not reach tools/sub/h.py for --changed, so it may not cover it
+        self.make_repo({**MODEL, "demo": [{"id": "one"}]}, {
+            **FILES,
+            "tools/joints_demo.py": self.plugin(
+                "import sys, os\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), 'sub'))\n"
+                "import h\n"
+                "def check(root, entries, model):\n"
+                "    return {'problems': [], 'items': len(entries), 'files': [], 'info': h.X}"),
+            "tools/sub/h.py": 'X = "ok"\n'})
+        self.write("crossweft.json", json.dumps(
+            {"joints": {"dir": "tools", "sources": ["tools/joints_*.py", "tools/*.py"]}}))
+        self.commit()
+        code, output = self.check()
+        self.assertEqual(code, 2, output)
+        self.assertIn("tools/sub/h.py is a plugin file or a helper it imports", output)
+
+    def test_an_unlisted_data_file_never_gets_an_incremental_pass(self) -> None:
+        # the base an incremental check builds on is a passing full check, and that
+        # fails on the unlisted read -- so a change to the file cannot hide behind it
+        reader = self.plugin(
+            "from pathlib import Path\n"
+            "def check(root, entries, model):\n"
+            "    x = (Path(root) / 'tools' / 'data.json').read_text()\n"
+            "    return {'problems': [], 'items': len(entries), 'files': [], 'info': x}")
+        self.make_repo({**MODEL, "demo": [{"id": "one"}]}, {
+            **FILES, "tools/joints_demo.py": reader, "tools/data.json": "{}\n"})
+        self.write("crossweft.json", json.dumps({"joints": {"dir": "tools",
+                                                            "sources": ["tools/joints_*.py"]}}))
+        self.commit()
+        self.assertEqual(self.check("--incremental")[0], 1)
+        path = engine._pass_record_path(engine.load_config(self.root))
+        self.assertFalse(path.exists(), "a failing run must not record a base")
+        self.write("tools/data.json", '{"changed": 1}\n')
+        code, output = self.check("--incremental")
+        self.assertEqual(code, 1, output)
+        self.assertIn("joints:unlisted-read:demo:tools/data.json", output)
+
+    def test_a_data_file_the_plugin_reads_must_be_listed(self) -> None:
+        reader = self.plugin(
+            "from pathlib import Path\n"
+            "def check(root, entries, model):\n"
+            "    x = (Path(root) / 'tools' / 'data.json').read_text()\n"
+            "    return {'problems': [], 'items': len(entries), 'files': [], 'info': x}")
+        self.make_repo({**MODEL, "demo": [{"id": "one"}]}, {
+            **FILES, "tools/joints_demo.py": reader, "tools/data.json": "{}\n"})
+        self.write("crossweft.json", json.dumps({"joints": {"dir": "tools",
+                                                            "sources": ["tools/joints_*.py"]}}))
+        self.commit()
+        code, output = self.check()
+        self.assertEqual(code, 1, output)
+        self.assertIn("joints:unlisted-read:demo:tools/data.json", output)
+        self.write("crossweft.json", json.dumps({"joints": {"dir": "tools", "sources": [
+            "tools/joints_*.py", "tools/data.json"]}}))
+        self.commit()
+        self.assertEqual(self.check()[0], 0)
+        self.write("tools/data.json", '{"changed": 1}\n')
+        code, output = self.check("--changed", "HEAD")
+        self.assertIn("(full check; --changed fell back)", output)

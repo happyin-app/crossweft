@@ -28,7 +28,7 @@ At the repository root; it also marks the root. Every key is optional.
 | `agent` | `{"stop": "block"}` | `stop`: `block` sends the agent back while the check fails, `warn` only tells the user. `harness`: `true` makes `check` fail when the agent harness written by `crossweft agents` (hooks, AGENTS.md block, skill) is missing or out of date; `init` sets it |
 | `validators` | -- | `{"dir": "scripts/validators", "timeout": 120, "timeouts": {"validate_x.py": 300}}` for `crossweft validators` |
 | `discover` | -- | `{"exclude": ["vendor/**", "**/*_test.go"]}` for `crossweft discover` |
-| `joints` | -- | `{"dir": "tools/joints"}`: where your [joint-kind plugins](#joint-kind-plugins) live |
+| `joints` | -- | `{"dir": "tools/joints"}`: where your [joint-kind plugins](#joint-kind-plugins) live. Optional `"sources"`: globs of the plugin files and the helpers they import, when `dir` also holds unrelated code -- `check --changed` then reruns the whole map only when one of those changes (default: any change under `dir`). A plugin that imports a helper from `dir`, or reads a file from `dir` while it is imported or checked, that neither `sources` nor the kind's inputs (entry paths, `IMPACT_GLOBS`) cover is an error (`joints:unlisted-read:<kind>:<path>`); globs match the way `--changed` does, part by part. `sources` may list any file, not only `.py`. A read is seen when the plugin runs, so a full check fails on it and an incremental check never records a pass over it; plain `--changed REV` assumes REV itself passed |
 
 ## `meta`
 
@@ -400,3 +400,9 @@ are never replaced.
 `impact` names a kind whenever a changed file is a path written in its entries
 (a string containing `/`) or matches `IMPACT_GLOBS`, and says so when a kind has
 neither, so a plugin gate is never silently left out of the pre-commit report.
+
+`check --changed` and `check --incremental` rerun a kind only when one of these
+files (or a file under `joints.dir`) changed. A plugin that reads any other file
+must list it in `IMPACT_GLOBS`: reads under `joints.dir` are caught by
+`joints.sources`, reads elsewhere are not, so an undeclared one is rechecked only
+by a full `check` (which CI runs).

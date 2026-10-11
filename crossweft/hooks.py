@@ -33,6 +33,7 @@ from pathlib import Path
 
 from .harness import project_hooks_run
 from .engine import (CONFIG_FILE, Config, ModelError, _normalize_paths, build_impact, evaluate,
+                     evaluate_incremental,
                      find_repo_root, load_config, load_model, validate_schema, ImpactError)
 
 AGENTS = ("claude-code", "codex", "gemini", "copilot", "cursor")
@@ -174,7 +175,9 @@ def post_edit_message(cfg: Config, raw_paths: list[str], cwd: Path | None = None
 def stop_message(cfg: Config) -> tuple[bool, str, list[str]]:
     """(ok, reason, failing keys). ok with a reason: nothing to send the agent
     back for, but the user must be told."""
-    result = evaluate(cfg)
+    # the incremental check: only what changed since the last verified commit, so
+    # a stop on a large repository costs seconds, not the whole map
+    result = evaluate_incremental(cfg)[0]
     if result.nothing_scanned:
         # `crossweft check` exits 2 here ("scanned nothing"): not verified is
         # never shown as green
