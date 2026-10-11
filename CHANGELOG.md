@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.3 (2026-10-11)
+
+- `validators.exclude` in `crossweft.json`: `{"validate_x.py": "<reason>"}` for a
+  `validate_*.py` that is not a suite validator, such as a commit-time gate that
+  judges one staged change. It is not run, and the report lists it with its
+  reason. An entry that names no file, has no reason, or is also given a
+  timeout is an error; excluding every file still fails with "nothing ran".
+
 ## 0.2.2 (2026-10-11)
 
 - `check --incremental`: `--changed` against the last commit at which the check

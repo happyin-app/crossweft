@@ -285,6 +285,64 @@ class PluginLauncher(unittest.TestCase):
 
 
 # 4 -- a validator timeout is enforced even when it leaves a child behind ------
+GOOD_VALIDATOR = ("import sys\n"
+                  "if '--self-test' in sys.argv:\n"
+                  "    print('SELF-TEST: checks=1'); sys.exit(0)\n"
+                  "print('SCANNED: files=1 items=1')\n")
+BROKEN_GATE = "import sys\nprint('needs a tool CI does not have'); sys.exit(2)\n"
+
+
+class ValidatorExclude(unittest.TestCase):
+    def suite(self, exclude, timeouts=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / "v"
+            d.mkdir()
+            (d / "validate_good.py").write_text(GOOD_VALIDATOR, encoding="utf-8")
+            (d / "validate_gate.py").write_text(BROKEN_GATE, encoding="utf-8")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                code = runner.run_validators(Path(tmp), d, 60, timeouts, exclude)
+            return code, out.getvalue()
+
+    def test_an_excluded_file_is_not_run_and_is_reported_with_its_reason(self) -> None:
+        code, output = self.suite(None)
+        self.assertEqual(code, 1, output)          # negative control: the gate fails when run
+        code, output = self.suite({"validate_gate.py": "commit gate, runs on --staged"})
+        self.assertEqual(code, 0, output)
+        self.assertIn("excluded (not run): validate_gate.py -- commit gate, runs on --staged",
+                      output)
+        self.assertIn("running 1 validator(s)", output)
+
+    def test_a_stale_exclude_entry_is_an_error(self) -> None:
+        code, output = self.suite({"validate_gone.py": "removed long ago"})
+        self.assertEqual(code, 1, output)
+        self.assertIn("validators.exclude names file(s) that do not exist: validate_gone.py",
+                      output)
+
+    def test_a_timeout_for_an_excluded_file_is_an_error(self) -> None:
+        code, output = self.suite({"validate_gate.py": "commit gate"},
+                                  {"validate_gate.py": 300})
+        self.assertEqual(code, 1, output)
+        self.assertIn("validators.timeouts names validator(s) that do not exist or are "
+                      "excluded: validate_gate.py", output)
+
+    def test_excluding_every_file_ran_nothing(self) -> None:
+        code, output = self.suite({"validate_gate.py": "gate", "validate_good.py": "also"})
+        self.assertEqual(code, 1, output)
+        self.assertIn("nothing ran", output)
+
+    def test_an_exclude_without_a_reason_is_refused_by_the_config(self) -> None:
+        from crossweft import engine
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for bad in ({"validate_gate.py": ""}, {"validate_gate.py": "  "},
+                        ["validate_gate.py"]):
+                (root / "crossweft.json").write_text(
+                    json.dumps({"validators": {"dir": "v", "exclude": bad}}), encoding="utf-8")
+                with self.assertRaises(engine.ModelError, msg=repr(bad)):
+                    engine.load_config(root)
+
+
 class ValidatorTimeout(unittest.TestCase):
     def test_timeout_kills_the_validator_and_its_children(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

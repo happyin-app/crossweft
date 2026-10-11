@@ -355,6 +355,6 @@ def main(argv: list[str] | None = None) -> int:
         if not directory.is_absolute():
             directory = cfg.root / directory
         return runner.run_validators(cfg.root, directory, cfg.validator_timeout,
-                                     cfg.validator_timeouts)
+                                     cfg.validator_timeouts, cfg.validator_exclude)
     parser.print_help()
     return 2

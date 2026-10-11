@@ -324,8 +324,8 @@ def evaluate_validator(script: Path, cwd: Path) -> Result:
     return r
 
 
-def discover(directory: Path) -> list[Path]:
-    return sorted(directory.glob("validate_*.py"))
+def discover(directory: Path, exclude=()) -> list[Path]:
+    return sorted(p for p in directory.glob("validate_*.py") if p.name not in exclude)
 
 
 def _print_table(results: list[Result]) -> None:
@@ -392,8 +392,8 @@ def worker_count(job_count: int) -> int:
     return max(1, min(requested, job_count))
 
 
-def run_suite(directory: Path, cwd: Path,
-              max_workers: int | None = None) -> tuple[list[Result], bool]:
+def run_suite(directory: Path, cwd: Path, max_workers: int | None = None,
+              exclude=()) -> tuple[list[Result], bool]:
     """Run every validator in `directory`. Returns (results, nothing_failed).
 
     `nothing_failed` is True when no validator FAILED -- a declared SKIP does not
@@ -407,7 +407,7 @@ def run_suite(directory: Path, cwd: Path,
     validator is a separate child process building its own private fixtures, so
     concurrency changes only WHEN they run, never WHAT they conclude.
     """
-    scripts = discover(directory)
+    scripts = discover(directory, exclude)
     if not scripts:
         # An empty directory is a misconfiguration, not a pass -- and there is no
         # pool to build (a zero-width ThreadPoolExecutor is an error).
@@ -794,31 +794,47 @@ def _run_self_test() -> int:
 
 
 def run_validators(root: Path, directory: Path, timeout: int = DEFAULT_TIMEOUT,
-                   timeouts: dict[str, int] | None = None) -> int:
-    """Run the suite in `directory` with the repository root as cwd."""
+                   timeouts: dict[str, int] | None = None,
+                   exclude: dict[str, str] | None = None) -> int:
+    """Run the suite in `directory` with the repository root as cwd.
+
+    `exclude` maps file names to the reason they are not suite validators (for
+    example a commit-time gate kept in the same directory). They are listed with
+    that reason, never dropped silently, and an entry naming no file is an error."""
     if not directory.is_dir():
         _say(f"[ERR] validators directory {directory} does not exist -- nothing ran.",
              file=sys.stderr)
         return 2
-    scripts = discover(directory)
-    if not scripts:
-        _say(f"[ERR] no validate_*.py found in {directory} -- nothing ran. "
-             "This is itself a misconfiguration.", file=sys.stderr)
+    exclude = exclude or {}
+    present = {script.name for script in discover(directory)}
+    stale = sorted(set(exclude) - present)
+    if stale:
+        _say(f"[ERR] validators.exclude names file(s) that do not exist: "
+             f"{', '.join(stale)} -- remove them", file=sys.stderr)
         return 1
+    scripts = discover(directory, exclude)
     names = {script.name for script in scripts}
     stale = sorted(set(timeouts or {}) - names)
     if stale:
-        # an override for a validator that no longer exists is a rotting allowlist
-        _say(f"[ERR] validators.timeouts names validator(s) that do not exist: "
-             f"{', '.join(stale)} -- remove them", file=sys.stderr)
+        # an override for a validator that no longer exists (or is excluded) is a rotting allowlist
+        _say(f"[ERR] validators.timeouts names validator(s) that do not exist or are "
+             f"excluded: {', '.join(stale)} -- remove them", file=sys.stderr)
+        return 1
+    if not scripts:
+        _say(f"[ERR] no validate_*.py to run in {directory} -- nothing ran. "
+             "This is itself a misconfiguration.", file=sys.stderr)
         return 1
     TIMEOUTS.clear()
     TIMEOUTS.update(timeouts or {})
     TIMEOUT_DEFAULT[0] = timeout
     _say(f"=== validators: running {len(scripts)} validator(s) "
          f"(self-test + normal) in {directory} ===\n")
+    for name in sorted(exclude):
+        _say(f"  excluded (not run): {name} -- {exclude[name]}")
+    if exclude:
+        _say()
     try:
-        results, _ = run_suite(directory, root)
+        results, _ = run_suite(directory, root, exclude=exclude)
     except ConfigError as exc:
         _say(f"[ERR] {exc}", file=sys.stderr)
         return 2

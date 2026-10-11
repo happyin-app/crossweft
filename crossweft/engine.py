@@ -1061,6 +1061,7 @@ class Config:
     validators_dir: Path | None = None
     validator_timeout: int = 120
     validator_timeouts: dict = dataclasses.field(default_factory=dict)
+    validator_exclude: dict = dataclasses.field(default_factory=dict)
     discover_exclude: list = dataclasses.field(default_factory=list)
     joints_dir: Path | None = None
     joints_sources: list = dataclasses.field(default_factory=list)
@@ -1168,7 +1169,7 @@ def load_config(root: Path) -> Config:
         if not isinstance(agent["harness"], bool):
             raise ModelError(f"{CONFIG_FILE}: agent.harness must be true/false")
         cfg.agent_harness = agent["harness"]
-    validators = sub_object("validators", {"dir", "timeout", "timeouts"})
+    validators = sub_object("validators", {"dir", "timeout", "timeouts", "exclude"})
     if "dir" in validators:
         cfg.validators_dir = rel_path("validators.dir", validators["dir"])
     if "timeout" in validators:
@@ -1184,6 +1185,14 @@ def load_config(root: Path) -> Config:
             raise ModelError(f"{CONFIG_FILE}: validators.timeouts must map file names to "
                              "positive integers")
         cfg.validator_timeouts = dict(timeouts)
+    if "exclude" in validators:
+        exclude = validators["exclude"]
+        if not isinstance(exclude, dict) or not all(
+                isinstance(k, str) and k and isinstance(v, str) and v.strip()
+                for k, v in exclude.items()):
+            raise ModelError(f"{CONFIG_FILE}: validators.exclude must map file names to the "
+                             "reason they are not run (a non-empty string)")
+        cfg.validator_exclude = dict(exclude)
     discover = sub_object("discover", {"exclude"})
     if "exclude" in discover:
         exclude = discover["exclude"]

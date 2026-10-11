@@ -25,6 +25,13 @@ fails the suite when any of them:
    On a timeout the validator and every process it started are killed, so a
    child it left running cannot stretch the wait.
 
+A `validate_*.py` that is not a suite validator -- for example a commit-time
+gate that judges one staged change and would misjudge a shared working tree --
+goes in `validators.exclude` with the reason: `{"validate_complexity.py":
+"commit gate, runs on --staged"}`. Excluded files are listed with their reason
+at the top of the report; an entry naming no file, or one without a reason, is
+an error.
+
 A validator that is legitimately not applicable to this checkout prints
 `APPLICABILITY: <reason>` and is reported as **SKIP**, never PASS -- and only
 after the three contracts above held. A bare `APPLICABILITY:` without a reason
